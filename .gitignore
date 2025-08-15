@@ -13,3 +13,9 @@ geo_tracker.db
 .venv*
 __pycache__/
 *.pyc
+
+# local artifacts
+*.db
+*.sqlite
+.DS_Store
+geo_tracker.db

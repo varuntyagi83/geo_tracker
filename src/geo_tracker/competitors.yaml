@@ -1,0 +1,14 @@
+# Canonical brand dictionary
+brands:
+  sunday_natural:
+    canonical: "Sunday Natural"
+    variants: ["Sunday Natural", "SundayNatural", "Sunday-Natural", "Sunday"]
+  brand_x:
+    canonical: "Brand X"
+    variants: ["Brand X", "BrandX"]
+  brand_y:
+    canonical: "Brand Y"
+    variants: ["Brand Y", "BrandY"]
+  brand_z:
+    canonical: "Brand Z"
+    variants: ["Brand Z", "BrandZ"]

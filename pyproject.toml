@@ -1,0 +1,8 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+
+[project]
+name = "geo-tracker"
+version = "0.1.0"
+description = "GEO tracking for foundation model presence and sentiment"
+requires-python = ">=3.10"

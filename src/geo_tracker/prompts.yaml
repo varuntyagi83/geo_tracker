@@ -1,0 +1,33 @@
+# Prompt registry for GEO tracking
+panel_versions:
+  default:
+    - id: p001
+      topic: sleep
+      intent: high_intent_shopping
+      language: en
+      market: DE
+      text: "Best magnesium supplement for sleep in Germany"
+    - id: p002
+      topic: omega3
+      intent: high_intent_shopping
+      language: en
+      market: DE
+      text: "Which omega three brand should I buy in Germany"
+    - id: p003
+      topic: vit_d_k2
+      intent: high_intent_shopping
+      language: en
+      market: DE
+      text: "Recommend a vitamin D and K2 stack for winter"
+    - id: p004
+      topic: brand_reputation
+      intent: brand_specific
+      language: en
+      market: DE
+      text: "Is Sunday Natural a good brand for supplements"
+    - id: p005
+      topic: comparison
+      intent: brand_specific
+      language: en
+      market: DE
+      text: "Compare Sunday Natural with Brand X for omega three"

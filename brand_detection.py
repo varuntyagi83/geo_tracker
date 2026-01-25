@@ -25,16 +25,33 @@ def _filter_our_brand_variations(brands: List, our_brand: str) -> Set[str]:
     Handles cases like:
     - "Sunday Natural" vs "Sunday" vs "sunday.de"
     - Exact matches
-    - Partial matches where our brand is a substring
     - Domain-style variations
+
+    IMPORTANT: For multi-word brands like "Sunday Natural":
+    - Filter "Sunday" (the distinctive/unique first word)
+    - DON'T filter "Natural" (generic word that could be part of competitor names)
     """
     if not our_brand:
         return {b.strip() for b in brands if isinstance(b, str) and b.strip()}
 
     our_brand_lower = our_brand.lower().strip()
-    our_brand_words = set(our_brand_lower.split())
+    our_brand_words = our_brand_lower.split()
 
-    # Also check for domain-style variations (e.g., "sunday.de", "sundaynatural.com")
+    # For multi-word brands, only the FIRST word is considered distinctive
+    # e.g., "Sunday Natural" -> "Sunday" is distinctive, "Natural" is generic
+    # e.g., "Nature Love" -> "Nature" could be distinctive but "Love" is generic
+    distinctive_word = our_brand_words[0] if our_brand_words else ""
+
+    # Generic words that should NOT be filtered even if they appear in our brand
+    # These are common words that many brands use
+    GENERIC_BRAND_WORDS = {
+        "natural", "nature", "organic", "bio", "pure", "health", "healthy",
+        "life", "love", "care", "plus", "pro", "premium", "gold", "best",
+        "super", "ultra", "max", "active", "vital", "fit", "wellness",
+        "green", "eco", "fresh", "original", "classic", "elements", "essentials"
+    }
+
+    # Domain-style variations (e.g., "sunday.de", "sundaynatural.com")
     our_brand_no_spaces = our_brand_lower.replace(" ", "")
 
     cleaned = set()
@@ -48,39 +65,45 @@ def _filter_our_brand_variations(brands: List, our_brand: str) -> Set[str]:
 
         # Check if this brand should be filtered out
         should_filter = False
+        filter_reason = ""
 
-        # 1. Exact match
+        # 1. Exact match of full brand name
         if b_lower == our_brand_lower:
             should_filter = True
+            filter_reason = "exact match"
 
-        # 2. Detected brand is a single word that's part of our brand name
-        elif b_lower in our_brand_words:
-            should_filter = True
-
-        # 3. Our brand contains the detected brand (e.g., "Sunday" in "Sunday Natural")
-        elif b_lower in our_brand_lower:
-            should_filter = True
-
-        # 4. Detected brand contains our full brand name
+        # 2. Detected brand contains our full brand name
         elif our_brand_lower in b_lower:
             should_filter = True
+            filter_reason = "contains full brand"
 
-        # 5. Any word from our brand appears as a standalone detected brand
-        elif any(word == b_lower for word in our_brand_words):
+        # 3. Our full brand contains the detected brand AND it's the distinctive word
+        elif b_lower == distinctive_word:
             should_filter = True
+            filter_reason = "distinctive word match"
 
-        # 6. Domain-style variations (e.g., "sunday.de" when brand is "Sunday Natural")
+        # 4. Domain-style variations
         else:
             b_base = re.sub(r'\.(com|de|co|net|org|io|uk|eu|fr|it|es)$', '', b_lower)
-            if b_base == our_brand_no_spaces or b_base in our_brand_words:
-                should_filter = True
 
-            # 7. Detected brand starts with any word from our brand
-            elif any(b_lower.startswith(word) or b_no_spaces.startswith(word) for word in our_brand_words):
+            # Check if domain matches our brand (e.g., "sundaynatural.de" or "sunday.de")
+            if b_base == our_brand_no_spaces:
                 should_filter = True
+                filter_reason = "domain matches full brand"
+            elif b_base == distinctive_word:
+                should_filter = True
+                filter_reason = "domain matches distinctive word"
+            # Check if detected brand starts with our distinctive word + domain
+            elif distinctive_word and b_lower.startswith(distinctive_word) and b_lower != distinctive_word:
+                # Only filter if it looks like a variation of our brand
+                # e.g., "sundaynatural.com" for "Sunday Natural"
+                # but NOT "Sundance" or "Sunflower"
+                if b_no_spaces.startswith(our_brand_no_spaces) or our_brand_no_spaces.startswith(b_no_spaces):
+                    should_filter = True
+                    filter_reason = "brand name variation"
 
         if should_filter:
-            print(f"[brand_detection] Filtered out '{b_original}' (variation of '{our_brand}')")
+            print(f"[brand_detection] Filtered out '{b_original}' ({filter_reason} of '{our_brand}')")
         else:
             cleaned.add(b_original)
 
@@ -95,21 +118,22 @@ def _call_openai_for_brands(text: str, industry: str, market: str, our_brand: st
     """Use OpenAI GPT-4o-mini to extract brand names."""
     try:
         from openai import OpenAI
-        
+
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
             return set()
-        
+
         client = OpenAI(api_key=api_key)
-        
-        # Build list of our brand words for the prompt
-        our_brand_words = [w for w in our_brand.split() if len(w) > 2] if our_brand else []
+
+        # Build exclusion hint - only exclude distinctive first word, not generic words
+        our_brand_words = our_brand.split() if our_brand else []
+        distinctive_word = our_brand_words[0] if our_brand_words else ""
         our_brand_variations_hint = ""
-        if our_brand_words:
+        if our_brand and distinctive_word:
             our_brand_variations_hint = f"""
-   - CRITICAL: Exclude "{our_brand}" AND any shortened form like: {', '.join(f'"{w}"' for w in our_brand_words)}
-   - If brand is "Sunday Natural", exclude both "Sunday Natural" AND "Sunday"
-   - If brand is "Nature Love", exclude both "Nature Love" AND "Nature" AND "Love\""""
+   - CRITICAL: Exclude "{our_brand}" and shortened forms using "{distinctive_word}"
+   - Example: For "Sunday Natural", exclude "Sunday Natural", "Sunday", "sunday.de"
+   - BUT DO include competitor brands with generic words like "Natural Elements", "Nature Love", etc."""
 
         prompt = f"""Extract ONLY actual COMPETITOR company/brand names from the following text.
 
@@ -125,7 +149,7 @@ RULES:
    - City names (Berlin, Mumbai, Delhi, etc.)
    - Generic words (Food, Delivery, Restaurant, Quality, etc.)
    - Adjectives (Best, Top, Popular, Indian, German, etc.){our_brand_variations_hint}
-3. Include competitor brands only (not our brand)
+3. Include competitor brands only (not our brand or its variations)
 4. IMPORTANT - Brand variations and aliases:
    - Recognize that brands often appear in multiple forms: full name, shortened name, domain name, etc.
    - Examples of variations that are the SAME brand:
@@ -175,22 +199,23 @@ def _call_gemini_for_brands(text: str, industry: str, market: str, our_brand: st
     """Use Gemini Flash to extract brand names."""
     try:
         import google.generativeai as genai
-        
+
         api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
         if not api_key:
             return set()
-        
+
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel("gemini-2.0-flash")
-        
-        # Build list of our brand words for the prompt
-        our_brand_words = [w for w in our_brand.split() if len(w) > 2] if our_brand else []
+
+        # Build exclusion hint - only exclude distinctive first word, not generic words
+        our_brand_words = our_brand.split() if our_brand else []
+        distinctive_word = our_brand_words[0] if our_brand_words else ""
         our_brand_variations_hint = ""
-        if our_brand_words:
+        if our_brand and distinctive_word:
             our_brand_variations_hint = f"""
-   - CRITICAL: Exclude "{our_brand}" AND any shortened form like: {', '.join(f'"{w}"' for w in our_brand_words)}
-   - If brand is "Sunday Natural", exclude both "Sunday Natural" AND "Sunday"
-   - If brand is "Nature Love", exclude both "Nature Love" AND "Nature" AND "Love\""""
+   - CRITICAL: Exclude "{our_brand}" and shortened forms using "{distinctive_word}"
+   - Example: For "Sunday Natural", exclude "Sunday Natural", "Sunday", "sunday.de"
+   - BUT DO include competitor brands with generic words like "Natural Elements", "Nature Love", etc."""
 
         prompt = f"""Extract ONLY actual COMPETITOR company/brand names from the following text.
 
@@ -206,7 +231,7 @@ RULES:
    - City names (Berlin, Mumbai, Delhi, etc.)
    - Generic words (Food, Delivery, Restaurant, Quality, etc.)
    - Adjectives (Best, Top, Popular, Indian, German, etc.){our_brand_variations_hint}
-3. Include competitor brands only (not our brand)
+3. Include competitor brands only (not our brand or its variations)
 4. IMPORTANT - Brand variations and aliases:
    - Recognize that brands often appear in multiple forms: full name, shortened name, domain name, etc.
    - Examples of variations that are the SAME brand:

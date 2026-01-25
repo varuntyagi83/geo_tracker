@@ -15,6 +15,8 @@ from datetime import datetime
 class ProviderEnum(str, Enum):
     openai = "openai"
     gemini = "gemini"
+    perplexity = "perplexity"
+    anthropic = "anthropic"
 
 
 class ModeEnum(str, Enum):
@@ -89,6 +91,8 @@ class RunConfigCreate(BaseModel):
     providers: List[ProviderEnum] = Field(default=[ProviderEnum.openai])
     openai_model: Optional[str] = "gpt-4.1-mini"
     gemini_model: Optional[str] = "gemini-2.5-flash"
+    perplexity_model: Optional[str] = "sonar"
+    anthropic_model: Optional[str] = "claude-sonnet-4-20250514"
     
     # Mode
     mode: ModeEnum = ModeEnum.provider_web

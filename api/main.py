@@ -11,7 +11,7 @@ Or:
 import os
 import sys
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
@@ -27,6 +27,8 @@ from .models import (
 )
 from .jobs import job_manager, Job, JobStatus
 from .services import geo_service
+from .sheets_service import fetch_sheet_prompts, extract_sheet_id
+from .report_service import generate_visibility_report, get_cached_report
 
 
 # ============================================
@@ -73,18 +75,26 @@ app.add_middleware(
 async def health_check():
     """Check API health and available providers."""
     available_providers = []
-    
+
     # Check OpenAI
     if os.getenv("OPENAI_API_KEY"):
         available_providers.append("openai")
-    
+
     # Check Gemini
     if os.getenv("GOOGLE_API_KEY"):
         available_providers.append("gemini")
-    
+
+    # Check Perplexity
+    if os.getenv("PERPLEXITY_API_KEY"):
+        available_providers.append("perplexity")
+
+    # Check Anthropic
+    if os.getenv("ANTHROPIC_API_KEY"):
+        available_providers.append("anthropic")
+
     return HealthResponse(
         status="healthy",
-        version="1.0.0",
+        version="2.0.0",
         providers_available=available_providers
     )
 
@@ -142,6 +152,10 @@ async def create_run(config: RunConfigCreate):
             raise HTTPException(status_code=400, detail="OpenAI API key not configured")
         if prov_str == "gemini" and not os.getenv("GOOGLE_API_KEY"):
             raise HTTPException(status_code=400, detail="Google API key not configured")
+        if prov_str == "perplexity" and not os.getenv("PERPLEXITY_API_KEY"):
+            raise HTTPException(status_code=400, detail="Perplexity API key not configured")
+        if prov_str == "anthropic" and not os.getenv("ANTHROPIC_API_KEY"):
+            raise HTTPException(status_code=400, detail="Anthropic API key not configured")
     
     # Calculate estimated tasks
     total_tasks = len(config.queries) * len(config.providers)
@@ -413,6 +427,154 @@ async def get_sample_queries(
         "generated_by": "template",
         "note": "These are template-based queries. For AI-generated queries, use POST /api/queries/generate with an API key."
     }
+
+
+# ============================================
+# GOOGLE SHEETS INTEGRATION
+# ============================================
+
+class SheetFetchRequest(BaseModel):
+    """Request to fetch prompts from a Google Sheet."""
+    sheet_url: str = Field(..., description="Google Sheet URL or ID")
+    worksheet_name: Optional[str] = Field(None, description="Worksheet name (defaults to first sheet)")
+    force_refresh: bool = Field(False, description="Force refresh from API (bypass cache)")
+
+
+@app.post(
+    "/api/sheets/prompts",
+    tags=["Sheets"],
+    summary="Fetch prompts from a user's Google Sheet"
+)
+async def fetch_sheet_prompts_endpoint(request: SheetFetchRequest):
+    """
+    Fetch and parse prompts from a user-provided Google Sheet.
+
+    The sheet must be shared with the application's service account.
+    Auto-detects question/prompt and category columns (supports multiple languages).
+
+    **How to use:**
+    1. Get the service account email from your GOOGLE_APPLICATION_CREDENTIALS JSON
+    2. Share your Google Sheet with that email (give Viewer access)
+    3. Copy the sheet URL and paste it here
+
+    Returns all prompts with metadata. Use the 'count' and 'start' params
+    in the run config to select a subset.
+    """
+    try:
+        result = fetch_sheet_prompts(
+            sheet_url_or_id=request.sheet_url,
+            worksheet_name=request.worksheet_name,
+            force_refresh=request.force_refresh
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch sheet: {str(e)}")
+
+
+@app.get(
+    "/api/sheets/validate",
+    tags=["Sheets"],
+    summary="Validate a Google Sheet URL"
+)
+async def validate_sheet_url(url: str = Query(..., description="Google Sheet URL or ID")):
+    """
+    Quick validation that a sheet URL is accessible.
+    Returns basic info about the sheet without fetching all data.
+    """
+    try:
+        # Extract sheet ID to validate format
+        sheet_id = extract_sheet_id(url)
+
+        # Fetch with minimal processing
+        result = fetch_sheet_prompts(url)
+        return {
+            "valid": True,
+            "sheet_id": sheet_id,
+            "sheet_title": result.get("sheet_title", ""),
+            "total_prompts": result.get("total_count", 0),
+            "columns": result.get("all_columns", []),
+            "columns_detected": result.get("columns_detected", {}),
+        }
+    except ValueError as e:
+        return {"valid": False, "error": str(e)}
+    except Exception as e:
+        return {"valid": False, "error": str(e)}
+
+
+# ============================================
+# VISIBILITY REPORTS
+# ============================================
+
+class ReportRequest(BaseModel):
+    """Request for generating a visibility report."""
+    job_id: Optional[str] = Field(None, description="Job ID to associate report with (for caching)")
+    brand_name: str = Field(..., description="Brand name being analyzed")
+    results_summary: Dict[str, Any] = Field(..., description="Summary metrics from the run")
+    detailed_results: List[Dict[str, Any]] = Field(..., description="Detailed query results")
+    provider: str = Field("openai", description="LLM provider for analysis (openai, gemini)")
+    model: str = Field("gpt-4.1", description="Model to use for analysis")
+    force_regenerate: bool = Field(False, description="Regenerate even if cached report exists")
+
+
+@app.post(
+    "/api/reports/visibility",
+    tags=["Reports"],
+    summary="Generate AI-powered visibility report"
+)
+async def generate_report_endpoint(request: ReportRequest):
+    """
+    Generate a detailed visibility report with recommendations.
+
+    This uses an LLM to analyze the run results and provide:
+    - Executive summary of current visibility status
+    - Key findings from the data
+    - Content optimization recommendations
+    - Competitive analysis
+    - Authority building recommendations
+    - Priority action items
+
+    Reports are cached per job_id. Use force_regenerate=True to generate a new one.
+
+    **Note:** This endpoint may take 15-30 seconds as it calls the LLM for analysis.
+    """
+    # Check for cached report first
+    if request.job_id and not request.force_regenerate:
+        cached = get_cached_report(request.job_id)
+        if cached:
+            return cached
+
+    try:
+        # Generate report (this can take 10-30 seconds)
+        report = await generate_visibility_report(
+            results_summary=request.results_summary,
+            detailed_results=request.detailed_results,
+            brand_name=request.brand_name,
+            job_id=request.job_id,
+            provider=request.provider,
+            model=request.model
+        )
+        return report
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Report generation failed: {str(e)}")
+
+
+@app.get(
+    "/api/reports/{job_id}",
+    tags=["Reports"],
+    summary="Get cached report for a job"
+)
+async def get_report_endpoint(job_id: str):
+    """
+    Get a previously generated report for a job.
+
+    Returns the cached report if one exists, or 404 if not found.
+    """
+    cached = get_cached_report(job_id)
+    if not cached:
+        raise HTTPException(status_code=404, detail="No report found for this job")
+    return cached
 
 
 # ============================================

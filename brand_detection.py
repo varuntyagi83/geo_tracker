@@ -15,6 +15,79 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeou
 
 
 # ============================================
+# HELPER FUNCTIONS
+# ============================================
+
+def _filter_our_brand_variations(brands: List, our_brand: str) -> Set[str]:
+    """
+    Filter out our brand and its variations from the detected brands.
+
+    Handles cases like:
+    - "Sunday Natural" vs "Sunday" vs "sunday.de"
+    - Exact matches
+    - Partial matches where our brand is a substring
+    - Domain-style variations
+    """
+    if not our_brand:
+        return {b.strip() for b in brands if isinstance(b, str) and b.strip()}
+
+    our_brand_lower = our_brand.lower().strip()
+    our_brand_words = set(our_brand_lower.split())
+
+    # Also check for domain-style variations (e.g., "sunday.de", "sundaynatural.com")
+    our_brand_no_spaces = our_brand_lower.replace(" ", "")
+
+    cleaned = set()
+    for b in brands:
+        if not isinstance(b, str) or not b.strip():
+            continue
+
+        b_original = b.strip()
+        b_lower = b_original.lower()
+        b_no_spaces = b_lower.replace(" ", "").replace("-", "").replace(".", "").replace("_", "")
+
+        # Check if this brand should be filtered out
+        should_filter = False
+
+        # 1. Exact match
+        if b_lower == our_brand_lower:
+            should_filter = True
+
+        # 2. Detected brand is a single word that's part of our brand name
+        elif b_lower in our_brand_words:
+            should_filter = True
+
+        # 3. Our brand contains the detected brand (e.g., "Sunday" in "Sunday Natural")
+        elif b_lower in our_brand_lower:
+            should_filter = True
+
+        # 4. Detected brand contains our full brand name
+        elif our_brand_lower in b_lower:
+            should_filter = True
+
+        # 5. Any word from our brand appears as a standalone detected brand
+        elif any(word == b_lower for word in our_brand_words):
+            should_filter = True
+
+        # 6. Domain-style variations (e.g., "sunday.de" when brand is "Sunday Natural")
+        else:
+            b_base = re.sub(r'\.(com|de|co|net|org|io|uk|eu|fr|it|es)$', '', b_lower)
+            if b_base == our_brand_no_spaces or b_base in our_brand_words:
+                should_filter = True
+
+            # 7. Detected brand starts with any word from our brand
+            elif any(b_lower.startswith(word) or b_no_spaces.startswith(word) for word in our_brand_words):
+                should_filter = True
+
+        if should_filter:
+            print(f"[brand_detection] Filtered out '{b_original}' (variation of '{our_brand}')")
+        else:
+            cleaned.add(b_original)
+
+    return cleaned
+
+
+# ============================================
 # LLM BRAND EXTRACTION
 # ============================================
 
@@ -29,23 +102,38 @@ def _call_openai_for_brands(text: str, industry: str, market: str, our_brand: st
         
         client = OpenAI(api_key=api_key)
         
-        prompt = f"""Extract ONLY actual company/brand names from the following text.
+        # Build list of our brand words for the prompt
+        our_brand_words = [w for w in our_brand.split() if len(w) > 2] if our_brand else []
+        our_brand_variations_hint = ""
+        if our_brand_words:
+            our_brand_variations_hint = f"""
+   - CRITICAL: Exclude "{our_brand}" AND any shortened form like: {', '.join(f'"{w}"' for w in our_brand_words)}
+   - If brand is "Sunday Natural", exclude both "Sunday Natural" AND "Sunday"
+   - If brand is "Nature Love", exclude both "Nature Love" AND "Nature" AND "Love\""""
+
+        prompt = f"""Extract ONLY actual COMPETITOR company/brand names from the following text.
 
 CONTEXT:
 - Industry: {industry}
 - Market/Country: {market}
-- Our brand (exclude this): {our_brand}
+- OUR brand to EXCLUDE: "{our_brand}"
 
 RULES:
-1. Return ONLY real company names and brand names
+1. Return ONLY real company names and brand names that are COMPETITORS
 2. DO NOT include:
    - Country names (India, Germany, USA, etc.)
    - City names (Berlin, Mumbai, Delhi, etc.)
    - Generic words (Food, Delivery, Restaurant, Quality, etc.)
-   - Adjectives (Best, Top, Popular, Indian, German, etc.)
-   - Our brand: {our_brand}
-3. Include competitor brands, restaurant chains, delivery apps, etc.
-4. Return as JSON array of strings, nothing else
+   - Adjectives (Best, Top, Popular, Indian, German, etc.){our_brand_variations_hint}
+3. Include competitor brands only (not our brand)
+4. IMPORTANT - Brand variations and aliases:
+   - Recognize that brands often appear in multiple forms: full name, shortened name, domain name, etc.
+   - Examples of variations that are the SAME brand:
+     * "Amazon", "amazon.de", "Amazon.com" → use "Amazon"
+     * "dm-drogerie markt", "dm", "dm.de" → use "dm"
+     * "Natural Elements", "naturalelements.de" → use "Natural Elements"
+   - Consolidate variations into ONE canonical (most complete/official) form
+5. Return as JSON array of strings with deduplicated canonical names only
 
 TEXT TO ANALYZE:
 {text[:3000]}
@@ -73,15 +161,7 @@ If no brands found, return: []"""
         
         if isinstance(brands, list):
             # Filter out our brand and clean up
-            our_brand_lower = our_brand.lower()
-            our_brand_words = set(our_brand.lower().split())
-            
-            cleaned = set()
-            for b in brands:
-                if isinstance(b, str) and b.strip():
-                    b = b.strip()
-                    if b.lower() != our_brand_lower and b.lower() not in our_brand_words:
-                        cleaned.add(b)
+            cleaned = _filter_our_brand_variations(brands, our_brand)
             return cleaned
         
         return set()
@@ -103,23 +183,38 @@ def _call_gemini_for_brands(text: str, industry: str, market: str, our_brand: st
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel("gemini-2.0-flash")
         
-        prompt = f"""Extract ONLY actual company/brand names from the following text.
+        # Build list of our brand words for the prompt
+        our_brand_words = [w for w in our_brand.split() if len(w) > 2] if our_brand else []
+        our_brand_variations_hint = ""
+        if our_brand_words:
+            our_brand_variations_hint = f"""
+   - CRITICAL: Exclude "{our_brand}" AND any shortened form like: {', '.join(f'"{w}"' for w in our_brand_words)}
+   - If brand is "Sunday Natural", exclude both "Sunday Natural" AND "Sunday"
+   - If brand is "Nature Love", exclude both "Nature Love" AND "Nature" AND "Love\""""
+
+        prompt = f"""Extract ONLY actual COMPETITOR company/brand names from the following text.
 
 CONTEXT:
 - Industry: {industry}
 - Market/Country: {market}
-- Our brand (exclude this): {our_brand}
+- OUR brand to EXCLUDE: "{our_brand}"
 
 RULES:
-1. Return ONLY real company names and brand names
+1. Return ONLY real company names and brand names that are COMPETITORS
 2. DO NOT include:
    - Country names (India, Germany, USA, etc.)
    - City names (Berlin, Mumbai, Delhi, etc.)
    - Generic words (Food, Delivery, Restaurant, Quality, etc.)
-   - Adjectives (Best, Top, Popular, Indian, German, etc.)
-   - Our brand: {our_brand}
-3. Include competitor brands, restaurant chains, delivery apps, etc.
-4. Return as JSON array of strings, nothing else
+   - Adjectives (Best, Top, Popular, Indian, German, etc.){our_brand_variations_hint}
+3. Include competitor brands only (not our brand)
+4. IMPORTANT - Brand variations and aliases:
+   - Recognize that brands often appear in multiple forms: full name, shortened name, domain name, etc.
+   - Examples of variations that are the SAME brand:
+     * "Amazon", "amazon.de", "Amazon.com" → use "Amazon"
+     * "dm-drogerie markt", "dm", "dm.de" → use "dm"
+     * "Natural Elements", "naturalelements.de" → use "Natural Elements"
+   - Consolidate variations into ONE canonical (most complete/official) form
+5. Return as JSON array of strings with deduplicated canonical names only
 
 TEXT TO ANALYZE:
 {text[:3000]}
@@ -145,19 +240,12 @@ If no brands found, return: []"""
         brands = json.loads(result)
         
         if isinstance(brands, list):
-            our_brand_lower = our_brand.lower()
-            our_brand_words = set(our_brand.lower().split())
-            
-            cleaned = set()
-            for b in brands:
-                if isinstance(b, str) and b.strip():
-                    b = b.strip()
-                    if b.lower() != our_brand_lower and b.lower() not in our_brand_words:
-                        cleaned.add(b)
+            # Filter out our brand and clean up
+            cleaned = _filter_our_brand_variations(brands, our_brand)
             return cleaned
-        
+
         return set()
-        
+
     except Exception as e:
         print(f"[brand_detection] Gemini extraction error: {e}")
         return set()

@@ -1,6 +1,43 @@
+# Environment variables
 .env
-.env
+.env.local
+.env.production
+
+# Secrets and credentials
+secrets/
+*.json
+!package.json
+!tsconfig.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
 .DS_Store
-node_modules/
-.env
-.env
+Thumbs.db
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+
+# Build
+dist/
+build/
+*.egg-info/

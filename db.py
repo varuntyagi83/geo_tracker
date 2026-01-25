@@ -324,3 +324,82 @@ def insert_metrics(run_id, presence, sentiment, trust_authority, trust_sunday, d
     mid = cur.lastrowid
     con.commit()
     return mid
+
+
+# ---------- Recommendations ----------
+
+def _ensure_recommendations_table():
+    """Ensure the recommendations table exists."""
+    con = _connect()
+    cur = con.cursor()
+    if not _table_exists(cur, "recommendations"):
+        cur.execute("""
+        CREATE TABLE recommendations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id TEXT,
+            created_at TEXT NOT NULL,
+            analysis_type TEXT NOT NULL,
+            brand_name TEXT,
+            content TEXT NOT NULL,
+            provider TEXT,
+            model TEXT,
+            tokens_used INTEGER
+        )
+        """)
+        con.commit()
+
+
+def insert_recommendation(
+    job_id: Optional[str],
+    analysis_type: str,
+    content: str,
+    brand_name: Optional[str] = None,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    tokens_used: Optional[int] = None
+) -> int:
+    """Insert a new recommendation/report."""
+    _ensure_recommendations_table()
+    con = _connect()
+    cur = con.cursor()
+    created_at = datetime.now(timezone.utc).isoformat()
+    cur.execute("""
+        INSERT INTO recommendations (job_id, created_at, analysis_type, brand_name, content, provider, model, tokens_used)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (job_id, created_at, analysis_type, brand_name, content, provider, model, tokens_used))
+    rec_id = cur.lastrowid
+    con.commit()
+    return rec_id
+
+
+def get_recommendations(job_id: str) -> List[Dict]:
+    """Get recommendations for a specific job."""
+    _ensure_recommendations_table()
+    con = _connect()
+    cur = con.cursor()
+    cur.execute("""
+        SELECT id, job_id, created_at, analysis_type, brand_name, content, provider, model, tokens_used
+        FROM recommendations WHERE job_id = ? ORDER BY created_at DESC
+    """, (job_id,))
+    rows = cur.fetchall()
+    columns = [desc[0] for desc in cur.description]
+    return [dict(zip(columns, row)) for row in rows]
+
+
+def get_latest_recommendation(job_id: str, analysis_type: str = "visibility_report") -> Optional[Dict]:
+    """Get the most recent recommendation of a specific type for a job."""
+    _ensure_recommendations_table()
+    con = _connect()
+    cur = con.cursor()
+    cur.execute("""
+        SELECT id, job_id, created_at, analysis_type, brand_name, content, provider, model, tokens_used
+        FROM recommendations
+        WHERE job_id = ? AND analysis_type = ?
+        ORDER BY created_at DESC
+        LIMIT 1
+    """, (job_id, analysis_type))
+    row = cur.fetchone()
+    if row:
+        columns = [desc[0] for desc in cur.description]
+        return dict(zip(columns, row))
+    return None

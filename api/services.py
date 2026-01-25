@@ -24,9 +24,14 @@ import threading
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from db import init_db, insert_run, insert_response, insert_metrics, _connect
-from config import OPENAI_DEFAULT_MODEL, GEMINI_DEFAULT_MODEL
+from config import (
+    OPENAI_DEFAULT_MODEL, GEMINI_DEFAULT_MODEL,
+    PERPLEXITY_DEFAULT_MODEL, ANTHROPIC_DEFAULT_MODEL
+)
 from llm_providers.openai_provider import OpenAIProvider
 from llm_providers.gemini_provider import GeminiProvider
+from llm_providers.perplexity_provider import PerplexityProvider
+from llm_providers.anthropic_provider import AnthropicProvider
 from metrics.presence import compute_presence_rate
 from metrics.sentiment import compute_sentiment
 from metrics.trust import compute_trustworthiness
@@ -51,6 +56,8 @@ from .models import (
 PROVIDERS = {
     "openai": OpenAIProvider,
     "gemini": GeminiProvider,
+    "perplexity": PerplexityProvider,
+    "anthropic": AnthropicProvider,
 }
 
 # ============================================
@@ -84,6 +91,16 @@ AVAILABLE_MODELS = {
         {"id": "gemini-2.5-flash-lite", "name": "Gemini 2.5 Flash-Lite", "description": "Cost-efficient"},
         {"id": "gemini-2.0-flash", "name": "Gemini 2.0 Flash", "description": "Previous gen (until March 2026)"},
         {"id": "gemini-3-flash-preview", "name": "Gemini 3 Flash (Preview)", "description": "Preview: Advanced multimodal"},
+    ],
+    "perplexity": [
+        {"id": "sonar", "name": "Sonar", "description": "Fast with native web search"},
+        {"id": "sonar-pro", "name": "Sonar Pro", "description": "Advanced reasoning with web search"},
+        {"id": "sonar-reasoning", "name": "Sonar Reasoning", "description": "Chain-of-thought with web search"},
+    ],
+    "anthropic": [
+        {"id": "claude-3-haiku-20240307", "name": "Claude 3 Haiku", "description": "Fast and affordable"},
+        {"id": "claude-sonnet-4-20250514", "name": "Claude Sonnet 4", "description": "Balanced performance"},
+        {"id": "claude-opus-4-20250514", "name": "Claude Opus 4", "description": "Most capable, extended thinking"},
     ],
 }
 
@@ -437,6 +454,10 @@ class GEOTrackerService:
                 model = config.openai_model or OPENAI_DEFAULT_MODEL
             elif provider_name_str == "gemini":
                 model = config.gemini_model or GEMINI_DEFAULT_MODEL
+            elif provider_name_str == "perplexity":
+                model = config.perplexity_model or PERPLEXITY_DEFAULT_MODEL
+            elif provider_name_str == "anthropic":
+                model = config.anthropic_model or ANTHROPIC_DEFAULT_MODEL
             else:
                 model = OPENAI_DEFAULT_MODEL
             
@@ -553,6 +574,8 @@ class GEOTrackerService:
             "models_used": {
                 "openai": config.openai_model,
                 "gemini": config.gemini_model,
+                "perplexity": config.perplexity_model,
+                "anthropic": config.anthropic_model,
             },
             "execution_mode": "parallel",
         }

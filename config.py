@@ -1,0 +1,21 @@
+import os
+from dotenv import load_dotenv
+load_dotenv()
+
+SQLITE_PATH = os.getenv("SQLITE_PATH", "geo_tracker.db")
+
+GSHEET_SPREADSHEET_ID = os.getenv("GSHEET_SPREADSHEET_ID")
+GSHEET_WORKSHEET_NAME = os.getenv("GSHEET_WORKSHEET_NAME", "Prompts")
+GSHEET_AS_PUBLISHED_CSV_URL = os.getenv("GSHEET_AS_PUBLISHED_CSV_URL")
+GOOGLE_APPLICATION_CREDENTIALS = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+
+RETRIEVAL_MAX_RESULTS = int(os.getenv("RETRIEVAL_MAX_RESULTS", "3"))
+RETRIEVAL_FETCH_TIMEOUT = int(os.getenv("RETRIEVAL_FETCH_TIMEOUT", "10"))
+
+TRUST_MODE = os.getenv("TRUST_MODE", "heuristic")
+
+OPENAI_DEFAULT_MODEL = os.getenv("OPENAI_DEFAULT_MODEL", "gpt-4.1-mini")
+GEMINI_DEFAULT_MODEL = os.getenv("GEMINI_DEFAULT_MODEL", "gemini-2.5-flash")

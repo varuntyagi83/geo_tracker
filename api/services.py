@@ -23,7 +23,10 @@ import threading
 # Add parent directory to path to import existing modules
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from db import init_db, insert_run, insert_response, insert_metrics, _connect
+from db import (
+    init_db, insert_run, insert_response, insert_metrics, _connect,
+    get_or_create_brand, record_brand_run
+)
 from config import (
     OPENAI_DEFAULT_MODEL, GEMINI_DEFAULT_MODEL,
     PERPLEXITY_DEFAULT_MODEL, ANTHROPIC_DEFAULT_MODEL
@@ -517,7 +520,43 @@ class GEOTrackerService:
         
         # Calculate summary
         summary = self._calculate_summary(config, results)
-        
+
+        # Record brand run history
+        if config.brand_name and results:
+            try:
+                # Get or create brand entry
+                providers_list = [
+                    p.value if hasattr(p, 'value') else str(p)
+                    for p in config.providers
+                ]
+                brand_id = get_or_create_brand(
+                    brand_name=config.brand_name,
+                    industry=config.industry,
+                    market=config.market,
+                    company_id=config.company_id
+                )
+
+                # Record this run
+                job_id = job.id if job else None
+                record_brand_run(
+                    brand_id=brand_id,
+                    job_id=job_id,
+                    providers=providers_list,
+                    mode=config.mode.value if hasattr(config.mode, 'value') else str(config.mode),
+                    total_queries=len(results),
+                    visibility_pct=summary.get("overall_visibility", 0),
+                    avg_sentiment=summary.get("avg_sentiment"),
+                    avg_trust=summary.get("avg_trust_authority"),
+                    competitor_summary=summary.get("competitor_visibility", {}),
+                    extra={
+                        "models_used": summary.get("models_used", {}),
+                        "provider_visibility": summary.get("provider_visibility", {})
+                    }
+                )
+                print(f"[brand_history] Recorded run for brand '{config.brand_name}' (id={brand_id})")
+            except Exception as e:
+                print(f"[brand_history] Failed to record brand run: {e}", file=sys.stderr)
+
         return {
             "summary": summary,
             "results": results

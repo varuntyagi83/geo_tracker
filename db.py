@@ -403,3 +403,269 @@ def get_latest_recommendation(job_id: str, analysis_type: str = "visibility_repo
         columns = [desc[0] for desc in cur.description]
         return dict(zip(columns, row))
     return None
+
+
+# ---------- Brands History ----------
+
+def _ensure_brands_table():
+    """Ensure the brands table exists for tracking brand run history."""
+    con = _connect()
+    cur = con.cursor()
+    if not _table_exists(cur, "brands"):
+        cur.execute("""
+        CREATE TABLE brands (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            brand_name TEXT NOT NULL,
+            industry TEXT,
+            market TEXT,
+            company_id TEXT,
+            created_at TEXT NOT NULL,
+            last_run_at TEXT,
+            total_runs INTEGER DEFAULT 0,
+            total_queries INTEGER DEFAULT 0,
+            avg_visibility REAL,
+            extra TEXT
+        )
+        """)
+        # Create index for faster lookups
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_brands_name ON brands(brand_name)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_brands_company ON brands(company_id)")
+        con.commit()
+
+    # Ensure brand_runs table exists for linking brands to runs
+    if not _table_exists(cur, "brand_runs"):
+        cur.execute("""
+        CREATE TABLE brand_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            brand_id INTEGER NOT NULL,
+            job_id TEXT,
+            run_at TEXT NOT NULL,
+            providers TEXT,
+            mode TEXT,
+            total_queries INTEGER,
+            visibility_pct REAL,
+            avg_sentiment REAL,
+            avg_trust REAL,
+            competitor_summary TEXT,
+            extra TEXT,
+            FOREIGN KEY(brand_id) REFERENCES brands(id)
+        )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_brand_runs_brand ON brand_runs(brand_id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_brand_runs_job ON brand_runs(job_id)")
+        con.commit()
+
+
+def get_or_create_brand(
+    brand_name: str,
+    industry: Optional[str] = None,
+    market: Optional[str] = None,
+    company_id: Optional[str] = None,
+) -> int:
+    """Get existing brand or create new one. Returns brand_id."""
+    _ensure_brands_table()
+    con = _connect()
+    cur = con.cursor()
+
+    # Try to find existing brand (case-insensitive)
+    cur.execute("""
+        SELECT id FROM brands
+        WHERE LOWER(brand_name) = LOWER(?)
+        AND (company_id = ? OR (company_id IS NULL AND ? IS NULL))
+    """, (brand_name, company_id, company_id))
+    row = cur.fetchone()
+
+    if row:
+        return row[0]
+
+    # Create new brand
+    created_at = datetime.now(timezone.utc).isoformat()
+    cur.execute("""
+        INSERT INTO brands (brand_name, industry, market, company_id, created_at, total_runs, total_queries)
+        VALUES (?, ?, ?, ?, ?, 0, 0)
+    """, (brand_name, industry, market, company_id, created_at))
+    brand_id = cur.lastrowid
+    con.commit()
+    return brand_id
+
+
+def record_brand_run(
+    brand_id: int,
+    job_id: Optional[str],
+    providers: List[str],
+    mode: str,
+    total_queries: int,
+    visibility_pct: float,
+    avg_sentiment: Optional[float] = None,
+    avg_trust: Optional[float] = None,
+    competitor_summary: Optional[Dict] = None,
+    extra: Optional[Dict] = None,
+) -> int:
+    """Record a run for a brand and update brand stats."""
+    _ensure_brands_table()
+    con = _connect()
+    cur = con.cursor()
+
+    run_at = datetime.now(timezone.utc).isoformat()
+
+    # Insert brand run record
+    cur.execute("""
+        INSERT INTO brand_runs (brand_id, job_id, run_at, providers, mode, total_queries,
+                                visibility_pct, avg_sentiment, avg_trust, competitor_summary, extra)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        brand_id, job_id, run_at, json.dumps(providers), mode, total_queries,
+        visibility_pct, avg_sentiment, avg_trust,
+        json.dumps(competitor_summary or {}), json.dumps(extra or {})
+    ))
+    run_record_id = cur.lastrowid
+
+    # Update brand stats
+    cur.execute("""
+        UPDATE brands SET
+            last_run_at = ?,
+            total_runs = total_runs + 1,
+            total_queries = total_queries + ?,
+            avg_visibility = (
+                SELECT AVG(visibility_pct) FROM brand_runs WHERE brand_id = ?
+            )
+        WHERE id = ?
+    """, (run_at, total_queries, brand_id, brand_id))
+
+    con.commit()
+    return run_record_id
+
+
+def get_all_brands(company_id: Optional[str] = None, limit: int = 50) -> List[Dict]:
+    """Get all tracked brands, optionally filtered by company_id."""
+    _ensure_brands_table()
+    con = _connect()
+    cur = con.cursor()
+
+    if company_id:
+        cur.execute("""
+            SELECT id, brand_name, industry, market, company_id, created_at,
+                   last_run_at, total_runs, total_queries, avg_visibility, extra
+            FROM brands
+            WHERE company_id = ?
+            ORDER BY last_run_at DESC NULLS LAST, created_at DESC
+            LIMIT ?
+        """, (company_id, limit))
+    else:
+        cur.execute("""
+            SELECT id, brand_name, industry, market, company_id, created_at,
+                   last_run_at, total_runs, total_queries, avg_visibility, extra
+            FROM brands
+            ORDER BY last_run_at DESC NULLS LAST, created_at DESC
+            LIMIT ?
+        """, (limit,))
+
+    rows = cur.fetchall()
+    columns = [desc[0] for desc in cur.description]
+    return [dict(zip(columns, row)) for row in rows]
+
+
+def get_brand_by_id(brand_id: int) -> Optional[Dict]:
+    """Get a brand by its ID."""
+    _ensure_brands_table()
+    con = _connect()
+    cur = con.cursor()
+
+    cur.execute("""
+        SELECT id, brand_name, industry, market, company_id, created_at,
+               last_run_at, total_runs, total_queries, avg_visibility, extra
+        FROM brands WHERE id = ?
+    """, (brand_id,))
+
+    row = cur.fetchone()
+    if row:
+        columns = [desc[0] for desc in cur.description]
+        return dict(zip(columns, row))
+    return None
+
+
+def get_brand_by_name(brand_name: str, company_id: Optional[str] = None) -> Optional[Dict]:
+    """Get a brand by its name."""
+    _ensure_brands_table()
+    con = _connect()
+    cur = con.cursor()
+
+    if company_id:
+        cur.execute("""
+            SELECT id, brand_name, industry, market, company_id, created_at,
+                   last_run_at, total_runs, total_queries, avg_visibility, extra
+            FROM brands
+            WHERE LOWER(brand_name) = LOWER(?) AND company_id = ?
+        """, (brand_name, company_id))
+    else:
+        cur.execute("""
+            SELECT id, brand_name, industry, market, company_id, created_at,
+                   last_run_at, total_runs, total_queries, avg_visibility, extra
+            FROM brands
+            WHERE LOWER(brand_name) = LOWER(?)
+            ORDER BY last_run_at DESC NULLS LAST
+            LIMIT 1
+        """, (brand_name,))
+
+    row = cur.fetchone()
+    if row:
+        columns = [desc[0] for desc in cur.description]
+        return dict(zip(columns, row))
+    return None
+
+
+def get_brand_run_history(brand_id: int, limit: int = 20) -> List[Dict]:
+    """Get run history for a specific brand."""
+    _ensure_brands_table()
+    con = _connect()
+    cur = con.cursor()
+
+    cur.execute("""
+        SELECT id, brand_id, job_id, run_at, providers, mode, total_queries,
+               visibility_pct, avg_sentiment, avg_trust, competitor_summary, extra
+        FROM brand_runs
+        WHERE brand_id = ?
+        ORDER BY run_at DESC
+        LIMIT ?
+    """, (brand_id, limit))
+
+    rows = cur.fetchall()
+    columns = [desc[0] for desc in cur.description]
+    results = []
+    for row in rows:
+        result = dict(zip(columns, row))
+        # Parse JSON fields
+        if result.get("providers"):
+            try:
+                result["providers"] = json.loads(result["providers"])
+            except:
+                result["providers"] = []
+        if result.get("competitor_summary"):
+            try:
+                result["competitor_summary"] = json.loads(result["competitor_summary"])
+            except:
+                result["competitor_summary"] = {}
+        if result.get("extra"):
+            try:
+                result["extra"] = json.loads(result["extra"])
+            except:
+                result["extra"] = {}
+        results.append(result)
+
+    return results
+
+
+def delete_brand(brand_id: int) -> bool:
+    """Delete a brand and all its run history."""
+    _ensure_brands_table()
+    con = _connect()
+    cur = con.cursor()
+
+    # Delete run history first
+    cur.execute("DELETE FROM brand_runs WHERE brand_id = ?", (brand_id,))
+    # Delete the brand
+    cur.execute("DELETE FROM brands WHERE id = ?", (brand_id,))
+
+    deleted = cur.rowcount > 0
+    con.commit()
+    return deleted

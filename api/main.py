@@ -578,6 +578,125 @@ async def get_report_endpoint(job_id: str):
 
 
 # ============================================
+# BRAND HISTORY
+# ============================================
+
+from db import (
+    get_all_brands, get_brand_by_id, get_brand_by_name,
+    get_brand_run_history, delete_brand
+)
+
+
+@app.get(
+    "/api/brands",
+    tags=["Brands"],
+    summary="List all tracked brands"
+)
+async def list_brands(
+    company_id: Optional[str] = Query(None, description="Filter by company ID"),
+    limit: int = Query(50, ge=1, le=200, description="Max brands to return")
+):
+    """
+    Get all brands that have been tracked.
+
+    Each brand entry includes:
+    - Brand name and metadata
+    - Total runs and queries executed
+    - Average visibility score across all runs
+    - Last run timestamp
+    """
+    brands = get_all_brands(company_id=company_id, limit=limit)
+    return {
+        "brands": brands,
+        "count": len(brands)
+    }
+
+
+@app.get(
+    "/api/brands/{brand_id}",
+    tags=["Brands"],
+    summary="Get brand details"
+)
+async def get_brand(brand_id: int):
+    """
+    Get details for a specific brand by ID.
+    """
+    brand = get_brand_by_id(brand_id)
+    if not brand:
+        raise HTTPException(status_code=404, detail=f"Brand {brand_id} not found")
+    return brand
+
+
+@app.get(
+    "/api/brands/search/{brand_name}",
+    tags=["Brands"],
+    summary="Search brand by name"
+)
+async def search_brand(
+    brand_name: str,
+    company_id: Optional[str] = Query(None, description="Filter by company ID")
+):
+    """
+    Search for a brand by name (case-insensitive).
+    """
+    brand = get_brand_by_name(brand_name, company_id=company_id)
+    if not brand:
+        raise HTTPException(status_code=404, detail=f"Brand '{brand_name}' not found")
+    return brand
+
+
+@app.get(
+    "/api/brands/{brand_id}/history",
+    tags=["Brands"],
+    summary="Get run history for a brand"
+)
+async def get_brand_history(
+    brand_id: int,
+    limit: int = Query(20, ge=1, le=100, description="Max runs to return")
+):
+    """
+    Get the run history for a specific brand.
+
+    Each run entry includes:
+    - Run timestamp
+    - Providers used
+    - Query count
+    - Visibility percentage
+    - Sentiment and trust scores
+    - Top competitors detected
+    """
+    # Verify brand exists
+    brand = get_brand_by_id(brand_id)
+    if not brand:
+        raise HTTPException(status_code=404, detail=f"Brand {brand_id} not found")
+
+    history = get_brand_run_history(brand_id, limit=limit)
+    return {
+        "brand": brand,
+        "history": history,
+        "count": len(history)
+    }
+
+
+@app.delete(
+    "/api/brands/{brand_id}",
+    tags=["Brands"],
+    summary="Delete a brand and its history"
+)
+async def delete_brand_endpoint(brand_id: int):
+    """
+    Delete a brand and all its run history.
+
+    **Warning:** This cannot be undone. The original run data (queries, responses)
+    remains in the database but will no longer be associated with this brand.
+    """
+    success = delete_brand(brand_id)
+    if not success:
+        raise HTTPException(status_code=404, detail=f"Brand {brand_id} not found")
+    return {"message": f"Brand {brand_id} deleted successfully"}
+
+
+# ============================================
 # ERROR HANDLERS
 # ============================================
 

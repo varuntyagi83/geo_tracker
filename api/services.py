@@ -675,11 +675,11 @@ class GEOTrackerService:
             if result.get("provider_sources"):
                 try:
                     result["sources"] = json.loads(result["provider_sources"])
-                except:
+                except (json.JSONDecodeError, TypeError, ValueError):
                     result["sources"] = []
             else:
                 result["sources"] = []
-            
+
             if result.get("details"):
                 try:
                     details = json.loads(result["details"])
@@ -689,15 +689,15 @@ class GEOTrackerService:
                     # Filter by company_id if provided
                     if company_id and details.get("company_id") != company_id:
                         continue
-                except:
+                except (json.JSONDecodeError, TypeError, ValueError):
                     result["brand_mentioned"] = False
                     result["other_brands_detected"] = []
-            
+
             if result.get("extra"):
                 try:
                     extra = json.loads(result["extra"])
                     result["brand_name"] = extra.get("brand_name", "")
-                except:
+                except (json.JSONDecodeError, TypeError, ValueError):
                     pass
             
             results.append(result)
@@ -817,7 +817,7 @@ class GEOTrackerService:
                     extra = json.loads(result["extra"])
                     brand_name = extra.get("brand_name", "")
                     company_id = extra.get("company_id", "")
-                except:
+                except (json.JSONDecodeError, TypeError, ValueError):
                     pass
 
             if not market:
@@ -832,7 +832,7 @@ class GEOTrackerService:
             if result.get("provider_sources"):
                 try:
                     sources = json.loads(result["provider_sources"])
-                except:
+                except (json.JSONDecodeError, TypeError, ValueError):
                     pass
 
             brand_mentioned = False
@@ -842,7 +842,7 @@ class GEOTrackerService:
                     details = json.loads(result["details"])
                     brand_mentioned = details.get("brand_present", False)
                     other_brands = details.get("other_brands_detected", [])
-                except:
+                except (json.JSONDecodeError, TypeError, ValueError):
                     pass
 
             results.append({

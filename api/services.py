@@ -702,5 +702,118 @@ class GEOTrackerService:
         return results
 
 
+    def get_run_summaries(
+        self,
+        company_id: Optional[str] = None,
+        limit: int = 50,
+        since_days: int = 30
+    ) -> List[Dict]:
+        """
+        Get summarized run data grouped by brand and run timestamp.
+        This provides a high-level view of all runs for the Previous Runs tab.
+        """
+        con = _connect()
+        cursor = con.cursor()
+
+        # Query to get unique runs with aggregated metrics
+        query = """
+            SELECT
+                r.run_ts,
+                r.provider,
+                r.model,
+                r.mode,
+                r.market,
+                r.lang,
+                r.extra,
+                COUNT(DISTINCT r.id) as query_count,
+                AVG(m.presence) as avg_presence,
+                AVG(m.sentiment) as avg_sentiment,
+                AVG(m.trust_authority) as avg_trust,
+                SUM(CASE WHEN m.presence > 0 THEN 1 ELSE 0 END) as brand_mentions,
+                AVG(resp.latency_ms) as avg_latency_ms
+            FROM runs r
+            LEFT JOIN responses resp ON r.id = resp.run_id
+            LEFT JOIN metrics m ON r.id = m.run_id
+            WHERE r.run_ts >= datetime('now', ?)
+            GROUP BY r.run_ts, r.provider, r.model, r.mode, r.market, r.lang, r.extra
+            ORDER BY r.run_ts DESC
+            LIMIT ?
+        """
+
+        cursor.execute(query, (f'-{since_days} days', limit * 10))  # Get more to filter
+        rows = cursor.fetchall()
+        columns = [desc[0] for desc in cursor.description]
+
+        # Group results by run timestamp (within same minute = same run)
+        run_groups: Dict[str, Dict] = {}
+
+        for row in rows:
+            result = dict(zip(columns, row))
+
+            # Extract brand name from extra
+            brand_name = ""
+            run_company_id = None
+            if result.get("extra"):
+                try:
+                    extra = json.loads(result["extra"])
+                    brand_name = extra.get("brand_name", "")
+                    run_company_id = extra.get("company_id")
+                except:
+                    pass
+
+            # Filter by company_id if provided
+            if company_id and run_company_id != company_id:
+                continue
+
+            # Create a group key based on timestamp (truncate to minute) and brand
+            run_ts = result["run_ts"]
+            if run_ts:
+                # Truncate to minute for grouping
+                ts_key = run_ts[:16] if len(run_ts) > 16 else run_ts
+                group_key = f"{ts_key}_{brand_name}"
+            else:
+                continue
+
+            if group_key not in run_groups:
+                query_count = result.get("query_count") or 0
+                brand_mentions = result.get("brand_mentions") or 0
+                visibility = (brand_mentions / query_count * 100) if query_count > 0 else 0
+
+                run_groups[group_key] = {
+                    "run_ts": run_ts,
+                    "brand_name": brand_name,
+                    "providers": [result["provider"]] if result["provider"] else [],
+                    "models": [result["model"]] if result["model"] else [],
+                    "mode": result["mode"],
+                    "market": result["market"],
+                    "lang": result["lang"],
+                    "total_queries": query_count,
+                    "brand_mentions": brand_mentions,
+                    "visibility_pct": round(visibility, 2),
+                    "avg_sentiment": round(result["avg_sentiment"], 3) if result["avg_sentiment"] else None,
+                    "avg_trust": round(result["avg_trust"], 3) if result["avg_trust"] else None,
+                    "avg_latency_ms": round(result["avg_latency_ms"]) if result["avg_latency_ms"] else None,
+                    "company_id": run_company_id,
+                }
+            else:
+                # Merge provider/model into existing group
+                existing = run_groups[group_key]
+                if result["provider"] and result["provider"] not in existing["providers"]:
+                    existing["providers"].append(result["provider"])
+                if result["model"] and result["model"] not in existing["models"]:
+                    existing["models"].append(result["model"])
+                existing["total_queries"] += result.get("query_count") or 0
+                existing["brand_mentions"] += result.get("brand_mentions") or 0
+                # Recalculate visibility
+                if existing["total_queries"] > 0:
+                    existing["visibility_pct"] = round(
+                        existing["brand_mentions"] / existing["total_queries"] * 100, 2
+                    )
+
+        # Convert to list and limit
+        summaries = list(run_groups.values())[:limit]
+        return summaries
+
+
 # Global service instance
 geo_service = GEOTrackerService()

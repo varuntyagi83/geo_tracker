@@ -294,7 +294,7 @@ async def get_results(
 ):
     """
     Fetch historical results from the database.
-    
+
     This returns persisted results from previous runs, not just the current session.
     """
     results = geo_service.get_results_from_db(
@@ -303,6 +303,35 @@ async def get_results(
         since_days=since_days
     )
     return {"results": results, "count": len(results)}
+
+
+@app.get(
+    "/api/runs/history",
+    tags=["Results"],
+    summary="Get summarized run history"
+)
+async def get_run_history(
+    company_id: Optional[str] = Query(None, description="Filter by company ID"),
+    limit: int = Query(default=50, ge=1, le=200),
+    since_days: int = Query(default=30, ge=1, le=365)
+):
+    """
+    Get a summarized view of all previous runs.
+
+    This returns aggregated data per run, including:
+    - Brand name and timestamp
+    - Providers and models used
+    - Total queries and visibility percentage
+    - Average sentiment and trust scores
+
+    Ideal for displaying in a "Previous Runs" overview tab.
+    """
+    summaries = geo_service.get_run_summaries(
+        company_id=company_id,
+        limit=limit,
+        since_days=since_days
+    )
+    return {"runs": summaries, "count": len(summaries)}
 
 
 # ============================================

@@ -742,6 +742,27 @@ async def delete_brand_endpoint(brand_id: int):
     return {"message": f"Brand {brand_id} deleted successfully"}
 
 
+@app.delete(
+    "/api/admin/clear-runs",
+    tags=["Admin"],
+    summary="Clear all run data (admin only)"
+)
+async def clear_all_runs():
+    """
+    Clear all run data from the database.
+
+    **Warning:** This is destructive and cannot be undone.
+    Deletes all runs, responses, metrics, and brand_runs.
+    Brands themselves are preserved.
+    """
+    from db import clear_all_run_data
+    result = clear_all_run_data()
+    return {
+        "message": "All run data cleared successfully",
+        "deleted": result
+    }
+
+
 # ============================================
 # ERROR HANDLERS
 # ============================================

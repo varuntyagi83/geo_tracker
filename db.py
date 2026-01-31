@@ -747,3 +747,36 @@ def get_all_brand_runs(
         results.append(result)
 
     return results
+
+
+def clear_all_run_data() -> Dict[str, int]:
+    """
+    Clear all run data from the database.
+    Returns counts of deleted records.
+    """
+    con = _connect()
+    cur = con.cursor()
+
+    # Delete from child tables first (foreign key constraints)
+    cur.execute("DELETE FROM metrics")
+    metrics_deleted = cur.rowcount
+
+    cur.execute("DELETE FROM responses")
+    responses_deleted = cur.rowcount
+
+    cur.execute("DELETE FROM runs")
+    runs_deleted = cur.rowcount
+
+    # Clear brand_runs table
+    _ensure_brands_table()
+    cur.execute("DELETE FROM brand_runs")
+    brand_runs_deleted = cur.rowcount
+
+    con.commit()
+
+    return {
+        "runs_deleted": runs_deleted,
+        "responses_deleted": responses_deleted,
+        "metrics_deleted": metrics_deleted,
+        "brand_runs_deleted": brand_runs_deleted,
+    }

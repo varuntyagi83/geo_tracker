@@ -473,15 +473,27 @@ def get_or_create_brand(
     con = _connect()
     cur = con.cursor()
 
-    # Try to find existing brand (case-insensitive)
+    # Normalize brand name (trim whitespace)
+    brand_name = brand_name.strip() if brand_name else ""
+
+    # Try to find existing brand (case-insensitive, trimmed)
     cur.execute("""
         SELECT id FROM brands
-        WHERE LOWER(brand_name) = LOWER(?)
+        WHERE LOWER(TRIM(brand_name)) = LOWER(TRIM(?))
         AND (company_id = ? OR (company_id IS NULL AND ? IS NULL))
     """, (brand_name, company_id, company_id))
     row = cur.fetchone()
 
     if row:
+        # Update industry/market if they've changed (keep brand up-to-date)
+        if industry or market:
+            cur.execute("""
+                UPDATE brands SET
+                    industry = COALESCE(?, industry),
+                    market = COALESCE(?, market)
+                WHERE id = ?
+            """, (industry, market, row[0]))
+            con.commit()
         return row[0]
 
     # Create new brand

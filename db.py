@@ -268,6 +268,9 @@ def init_db():
     if _needs_migration(cur):
         _migrate(cur)
 
+    # Ensure brands and brand_runs tables exist
+    _ensure_brands_table()
+
     con.commit()
 
 # ---------- Inserts ----------

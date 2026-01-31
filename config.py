@@ -2,7 +2,29 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 
-SQLITE_PATH = os.getenv("SQLITE_PATH", "geo_tracker.db")
+# Database path - check for Railway volume mount first
+# Railway volumes are typically mounted at /data or /app/data
+def get_db_path():
+    """Get database path, preferring persistent volume if available."""
+    # Check explicit env var first
+    if os.getenv("SQLITE_PATH"):
+        return os.getenv("SQLITE_PATH")
+    if os.getenv("DB_PATH"):
+        return os.getenv("DB_PATH")
+
+    # Check for Railway volume mount at common locations
+    volume_paths = ["/data", "/app/data", "/railway/data"]
+    for vol_path in volume_paths:
+        if os.path.isdir(vol_path) and os.access(vol_path, os.W_OK):
+            db_path = os.path.join(vol_path, "geo_tracker.db")
+            print(f"[config] Using persistent volume for database: {db_path}")
+            return db_path
+
+    # Fallback to local file (ephemeral on Railway!)
+    print("[config] WARNING: No persistent volume found, database will be ephemeral!")
+    return "geo_tracker.db"
+
+SQLITE_PATH = get_db_path()
 
 GSHEET_SPREADSHEET_ID = os.getenv("GSHEET_SPREADSHEET_ID")
 GSHEET_WORKSHEET_NAME = os.getenv("GSHEET_WORKSHEET_NAME", "Prompts")

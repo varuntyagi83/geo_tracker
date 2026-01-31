@@ -2,10 +2,13 @@
 import os, json, sqlite3, threading
 from datetime import datetime, timezone
 from typing import Optional, Dict, List, Tuple
+from config import SQLITE_PATH
 
 # Thread-local storage for connections
-_DB_PATH = os.path.abspath(os.getenv("DB_PATH", "geo_tracker.db"))
+_DB_PATH = os.path.abspath(SQLITE_PATH)
 _local = threading.local()
+
+print(f"[db] Database path: {_DB_PATH}")
 
 # ---------- Connection & helpers ----------
 

@@ -792,3 +792,257 @@ def clear_all_run_data() -> Dict[str, int]:
         "metrics_deleted": metrics_deleted,
         "brand_runs_deleted": brand_runs_deleted,
     }
+
+
+# ---------- Leads Management ----------
+
+def _ensure_leads_table():
+    """Ensure the leads table exists for tracking lead submissions."""
+    con = _connect()
+    cur = con.cursor()
+    if not _table_exists(cur, "leads"):
+        cur.execute("""
+        CREATE TABLE leads (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            company TEXT NOT NULL,
+            email TEXT NOT NULL,
+            website TEXT,
+            industry TEXT,
+            service TEXT NOT NULL,
+            contact_name TEXT,
+            status TEXT DEFAULT 'new',
+            email_sent INTEGER DEFAULT 0,
+            email_id TEXT,
+            notes TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT
+        )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_leads_email ON leads(email)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_leads_status ON leads(status)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_leads_created ON leads(created_at)")
+        con.commit()
+
+
+def insert_lead(
+    company: str,
+    email: str,
+    service: str,
+    website: Optional[str] = None,
+    industry: Optional[str] = None,
+    contact_name: Optional[str] = None,
+    email_sent: bool = False,
+    email_id: Optional[str] = None,
+) -> int:
+    """Insert a new lead into the database."""
+    _ensure_leads_table()
+    con = _connect()
+    cur = con.cursor()
+    created_at = datetime.now(timezone.utc).isoformat()
+    cur.execute("""
+        INSERT INTO leads (company, email, website, industry, service, contact_name,
+                          email_sent, email_id, status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'new', ?)
+    """, (company, email, website, industry, service, contact_name,
+          1 if email_sent else 0, email_id, created_at))
+    lead_id = cur.lastrowid
+    con.commit()
+    return lead_id
+
+
+def get_all_leads(
+    status: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
+    include_emails: bool = True
+) -> List[Dict]:
+    """
+    Get all leads, optionally filtered by status.
+    If include_emails is False, email addresses are masked for privacy.
+    """
+    _ensure_leads_table()
+    con = _connect()
+    cur = con.cursor()
+
+    query = """
+        SELECT id, company, email, website, industry, service, contact_name,
+               status, email_sent, email_id, notes, created_at, updated_at
+        FROM leads
+    """
+    params = []
+
+    if status:
+        query += " WHERE status = ?"
+        params.append(status)
+
+    query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+    params.extend([limit, offset])
+
+    cur.execute(query, params)
+    rows = cur.fetchall()
+    columns = [desc[0] for desc in cur.description]
+
+    results = []
+    for row in rows:
+        result = dict(zip(columns, row))
+        # Mask email if not including full emails
+        if not include_emails and result.get("email"):
+            email = result["email"]
+            if "@" in email:
+                local, domain = email.split("@", 1)
+                masked_local = local[0] + "***" if len(local) > 1 else "***"
+                result["email"] = f"{masked_local}@{domain}"
+        results.append(result)
+
+    return results
+
+
+def get_lead_by_id(lead_id: int) -> Optional[Dict]:
+    """Get a specific lead by ID."""
+    _ensure_leads_table()
+    con = _connect()
+    cur = con.cursor()
+    cur.execute("""
+        SELECT id, company, email, website, industry, service, contact_name,
+               status, email_sent, email_id, notes, created_at, updated_at
+        FROM leads WHERE id = ?
+    """, (lead_id,))
+    row = cur.fetchone()
+    if row:
+        columns = [desc[0] for desc in cur.description]
+        return dict(zip(columns, row))
+    return None
+
+
+def update_lead_status(lead_id: int, status: str, notes: Optional[str] = None) -> bool:
+    """Update a lead's status and optionally add notes."""
+    _ensure_leads_table()
+    con = _connect()
+    cur = con.cursor()
+    updated_at = datetime.now(timezone.utc).isoformat()
+
+    if notes:
+        cur.execute("""
+            UPDATE leads SET status = ?, notes = ?, updated_at = ?
+            WHERE id = ?
+        """, (status, notes, updated_at, lead_id))
+    else:
+        cur.execute("""
+            UPDATE leads SET status = ?, updated_at = ?
+            WHERE id = ?
+        """, (status, updated_at, lead_id))
+
+    updated = cur.rowcount > 0
+    con.commit()
+    return updated
+
+
+def get_leads_stats() -> Dict:
+    """Get lead statistics for admin dashboard."""
+    _ensure_leads_table()
+    con = _connect()
+    cur = con.cursor()
+
+    # Total leads
+    cur.execute("SELECT COUNT(*) FROM leads")
+    total = cur.fetchone()[0]
+
+    # By status
+    cur.execute("""
+        SELECT status, COUNT(*) as count
+        FROM leads GROUP BY status
+    """)
+    by_status = {row[0]: row[1] for row in cur.fetchall()}
+
+    # By service
+    cur.execute("""
+        SELECT service, COUNT(*) as count
+        FROM leads GROUP BY service ORDER BY count DESC
+    """)
+    by_service = {row[0]: row[1] for row in cur.fetchall()}
+
+    # Recent (last 7 days)
+    cur.execute("""
+        SELECT COUNT(*) FROM leads
+        WHERE created_at >= datetime('now', '-7 days')
+    """)
+    recent = cur.fetchone()[0]
+
+    # Email success rate
+    cur.execute("SELECT COUNT(*) FROM leads WHERE email_sent = 1")
+    emails_sent = cur.fetchone()[0]
+
+    return {
+        "total": total,
+        "by_status": by_status,
+        "by_service": by_service,
+        "recent_7_days": recent,
+        "emails_sent": emails_sent,
+        "email_success_rate": round(emails_sent / total * 100, 1) if total > 0 else 0,
+    }
+
+
+# ---------- Admin Users ----------
+
+def _ensure_admin_users_table():
+    """Ensure the admin_users table exists."""
+    con = _connect()
+    cur = con.cursor()
+    if not _table_exists(cur, "admin_users"):
+        cur.execute("""
+        CREATE TABLE admin_users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'demo',
+            created_at TEXT NOT NULL,
+            last_login TEXT
+        )
+        """)
+        cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_admin_username ON admin_users(username)")
+        con.commit()
+
+
+def create_admin_user(username: str, password_hash: str, role: str = "demo") -> int:
+    """Create a new admin user. Role can be 'admin' or 'demo'."""
+    _ensure_admin_users_table()
+    con = _connect()
+    cur = con.cursor()
+    created_at = datetime.now(timezone.utc).isoformat()
+    cur.execute("""
+        INSERT INTO admin_users (username, password_hash, role, created_at)
+        VALUES (?, ?, ?, ?)
+    """, (username, password_hash, role, created_at))
+    user_id = cur.lastrowid
+    con.commit()
+    return user_id
+
+
+def get_admin_user(username: str) -> Optional[Dict]:
+    """Get admin user by username."""
+    _ensure_admin_users_table()
+    con = _connect()
+    cur = con.cursor()
+    cur.execute("""
+        SELECT id, username, password_hash, role, created_at, last_login
+        FROM admin_users WHERE username = ?
+    """, (username,))
+    row = cur.fetchone()
+    if row:
+        columns = [desc[0] for desc in cur.description]
+        return dict(zip(columns, row))
+    return None
+
+
+def update_admin_last_login(username: str) -> bool:
+    """Update admin user's last login timestamp."""
+    _ensure_admin_users_table()
+    con = _connect()
+    cur = con.cursor()
+    last_login = datetime.now(timezone.utc).isoformat()
+    cur.execute("""
+        UPDATE admin_users SET last_login = ? WHERE username = ?
+    """, (last_login, username))
+    updated = cur.rowcount > 0
+    con.commit()
+    return updated

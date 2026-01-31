@@ -14,9 +14,10 @@ from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -30,6 +31,14 @@ from .services import geo_service
 from .sheets_service import fetch_sheet_prompts, extract_sheet_id
 from .report_service import generate_visibility_report, get_cached_report
 from .email_service import send_lead_acknowledgment, is_email_service_configured
+from .admin_service import (
+    authenticate_admin, verify_token, initialize_default_admin,
+    get_leads_for_role, can_update_lead, get_user_permissions
+)
+from db import insert_lead, get_leads_stats, update_lead_status, get_lead_by_id
+
+# Security
+security = HTTPBearer(auto_error=False)
 
 
 # ============================================
@@ -41,6 +50,8 @@ async def lifespan(app: FastAPI):
     """Startup and shutdown events."""
     # Startup
     print("🚀 GEO Tracker API starting...")
+    # Initialize default admin users
+    initialize_default_admin()
     yield
     # Shutdown
     print("👋 GEO Tracker API shutting down...")
@@ -788,11 +799,11 @@ async def submit_lead(lead: LeadSubmission):
     Submit a lead from the contact form.
 
     This endpoint:
-    1. Logs the lead submission
+    1. Saves the lead to the database
     2. Sends an acknowledgment email to the lead via Resend
 
     The primary form submission should still go to Formspree.
-    This endpoint is for sending the auto-reply email.
+    This endpoint is for sending the auto-reply email and tracking.
     """
     # Send acknowledgment email
     email_result = send_lead_acknowledgment(
@@ -802,12 +813,30 @@ async def submit_lead(lead: LeadSubmission):
         contact_name=lead.contact_name
     )
 
+    # Save lead to database
+    try:
+        lead_id = insert_lead(
+            company=lead.company,
+            email=lead.email,
+            service=lead.service,
+            website=lead.website,
+            industry=lead.industry,
+            contact_name=lead.contact_name,
+            email_sent=email_result["success"],
+            email_id=email_result.get("message_id")
+        )
+    except Exception as e:
+        # Log error but don't fail the request
+        print(f"[leads] Failed to save lead to database: {e}")
+        lead_id = None
+
     if email_result["success"]:
         return {
             "success": True,
             "message": "Lead received and acknowledgment email sent",
             "email_sent": True,
-            "email_id": email_result.get("message_id")
+            "email_id": email_result.get("message_id"),
+            "lead_id": lead_id
         }
     else:
         # Email failed but we still acknowledge the lead
@@ -815,7 +844,8 @@ async def submit_lead(lead: LeadSubmission):
             "success": True,
             "message": "Lead received but email could not be sent",
             "email_sent": False,
-            "email_error": email_result.get("error")
+            "email_error": email_result.get("error"),
+            "lead_id": lead_id
         }
 
 
@@ -831,6 +861,177 @@ async def check_email_status():
         "email_service_configured": configured,
         "provider": "resend" if configured else None
     }
+
+
+# ============================================
+# ADMIN AUTHENTICATION
+# ============================================
+
+class AdminLoginRequest(BaseModel):
+    """Admin login request."""
+    username: str = Field(..., description="Admin username")
+    password: str = Field(..., description="Admin password")
+
+
+class AdminLeadUpdate(BaseModel):
+    """Update lead status."""
+    status: str = Field(..., description="New status (new, contacted, qualified, converted, lost)")
+    notes: Optional[str] = Field(None, description="Optional notes")
+
+
+def get_current_admin(credentials: HTTPAuthorizationCredentials = Depends(security)) -> Dict:
+    """Dependency to get and verify current admin user from token."""
+    if not credentials:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    payload = verify_token(credentials.credentials)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    return payload
+
+
+@app.post(
+    "/api/admin/login",
+    tags=["Admin"],
+    summary="Admin login"
+)
+async def admin_login(request: AdminLoginRequest):
+    """
+    Authenticate as an admin user.
+
+    Returns a JWT-like token for subsequent API calls.
+
+    **Users:**
+    - `admin` - Full access to all features
+    - `demo` - Limited access (masked emails, read-only)
+    """
+    result = authenticate_admin(request.username, request.password)
+    if not result:
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+
+    return {
+        "success": True,
+        "token": result["token"],
+        "username": result["username"],
+        "role": result["role"],
+        "permissions": get_user_permissions(result["role"]),
+        "expires_in": result["expires_in"]
+    }
+
+
+@app.get(
+    "/api/admin/me",
+    tags=["Admin"],
+    summary="Get current admin user info"
+)
+async def get_admin_info(admin: Dict = Depends(get_current_admin)):
+    """Get information about the currently authenticated admin."""
+    return {
+        "username": admin["username"],
+        "role": admin["role"],
+        "permissions": get_user_permissions(admin["role"])
+    }
+
+
+@app.get(
+    "/api/admin/leads",
+    tags=["Admin"],
+    summary="Get all leads (admin only)"
+)
+async def get_admin_leads(
+    status: Optional[str] = Query(None, description="Filter by status"),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    admin: Dict = Depends(get_current_admin)
+):
+    """
+    Get all leads for admin panel.
+
+    Demo users see masked email addresses.
+    Admin users see full data.
+    """
+    leads = get_leads_for_role(
+        role=admin["role"],
+        status=status,
+        limit=limit,
+        offset=offset
+    )
+    return {
+        "leads": leads,
+        "count": len(leads),
+        "role": admin["role"]
+    }
+
+
+@app.get(
+    "/api/admin/leads/stats",
+    tags=["Admin"],
+    summary="Get lead statistics (admin only)"
+)
+async def get_admin_lead_stats(admin: Dict = Depends(get_current_admin)):
+    """Get lead statistics for admin dashboard."""
+    permissions = get_user_permissions(admin["role"])
+    if not permissions.get("can_view_stats"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    stats = get_leads_stats()
+    return stats
+
+
+@app.get(
+    "/api/admin/leads/{lead_id}",
+    tags=["Admin"],
+    summary="Get a specific lead (admin only)"
+)
+async def get_admin_lead(lead_id: int, admin: Dict = Depends(get_current_admin)):
+    """Get details for a specific lead."""
+    permissions = get_user_permissions(admin["role"])
+    if not permissions.get("can_view_leads"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    lead = get_lead_by_id(lead_id)
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+
+    # Mask email for demo users
+    if not permissions.get("can_view_emails") and lead.get("email"):
+        email = lead["email"]
+        if "@" in email:
+            local, domain = email.split("@", 1)
+            masked_local = local[0] + "***" if len(local) > 1 else "***"
+            lead["email"] = f"{masked_local}@{domain}"
+
+    return lead
+
+
+@app.patch(
+    "/api/admin/leads/{lead_id}",
+    tags=["Admin"],
+    summary="Update lead status (admin only)"
+)
+async def update_admin_lead(
+    lead_id: int,
+    update: AdminLeadUpdate,
+    admin: Dict = Depends(get_current_admin)
+):
+    """Update a lead's status. Admin only - demo users cannot update."""
+    if not can_update_lead(admin["role"]):
+        raise HTTPException(status_code=403, detail="Demo users cannot update leads")
+
+    # Validate status
+    valid_statuses = ["new", "contacted", "qualified", "converted", "lost"]
+    if update.status not in valid_statuses:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid status. Must be one of: {', '.join(valid_statuses)}"
+        )
+
+    success = update_lead_status(lead_id, update.status, update.notes)
+    if not success:
+        raise HTTPException(status_code=404, detail="Lead not found")
+
+    return {"success": True, "message": f"Lead {lead_id} updated to status: {update.status}"}
 
 
 # ============================================

@@ -656,17 +656,17 @@ def get_brand_run_history(brand_id: int, limit: int = 20) -> List[Dict]:
         if result.get("providers"):
             try:
                 result["providers"] = json.loads(result["providers"])
-            except:
+            except (json.JSONDecodeError, TypeError, ValueError):
                 result["providers"] = []
         if result.get("competitor_summary"):
             try:
                 result["competitor_summary"] = json.loads(result["competitor_summary"])
-            except:
+            except (json.JSONDecodeError, TypeError, ValueError):
                 result["competitor_summary"] = {}
         if result.get("extra"):
             try:
                 result["extra"] = json.loads(result["extra"])
-            except:
+            except (json.JSONDecodeError, TypeError, ValueError):
                 result["extra"] = {}
         results.append(result)
 
@@ -744,17 +744,17 @@ def get_all_brand_runs(
         if result.get("providers"):
             try:
                 result["providers"] = json.loads(result["providers"])
-            except:
+            except (json.JSONDecodeError, TypeError, ValueError):
                 result["providers"] = []
         if result.get("competitor_summary"):
             try:
                 result["competitor_summary"] = json.loads(result["competitor_summary"])
-            except:
+            except (json.JSONDecodeError, TypeError, ValueError):
                 result["competitor_summary"] = {}
         if result.get("extra"):
             try:
                 result["extra"] = json.loads(result["extra"])
-            except:
+            except (json.JSONDecodeError, TypeError, ValueError):
                 result["extra"] = {}
         results.append(result)
 

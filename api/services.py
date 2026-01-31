@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from db import (
     init_db, insert_run, insert_response, insert_metrics, _connect,
-    get_or_create_brand, record_brand_run
+    get_or_create_brand, record_brand_run, get_all_brand_runs
 )
 from config import (
     OPENAI_DEFAULT_MODEL, GEMINI_DEFAULT_MODEL,
@@ -918,8 +918,8 @@ class GEOTrackerService:
                 "avg_trust_authority": round(avg_trust, 3) if avg_trust is not None else None,
                 "provider_visibility": provider_visibility,
                 "competitor_visibility": competitor_visibility,
-                "started_at": results[0]["run_id"] if results else None,
-                "completed_at": results[-1]["run_id"] if results else None,
+                "started_at": results[0].get("run_ts") if results else None,
+                "completed_at": results[-1].get("run_ts") if results else None,
             },
             "results": results
         }

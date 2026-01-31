@@ -35,6 +35,10 @@ from .admin_service import (
     authenticate_admin, verify_token, initialize_default_admin,
     get_leads_for_role, can_update_lead, get_user_permissions
 )
+from .user_service import (
+    register_user, authenticate_user, get_user_from_token,
+    verify_user_token, update_user, initialize_demo_user, get_total_users
+)
 from db import insert_lead, get_leads_stats, update_lead_status, get_lead_by_id
 
 # Security
@@ -52,6 +56,8 @@ async def lifespan(app: FastAPI):
     print("🚀 GEO Tracker API starting...")
     # Initialize default admin users
     initialize_default_admin()
+    # Initialize demo webapp user
+    initialize_demo_user()
     yield
     # Shutdown
     print("👋 GEO Tracker API shutting down...")
@@ -1032,6 +1038,175 @@ async def update_admin_lead(
         raise HTTPException(status_code=404, detail="Lead not found")
 
     return {"success": True, "message": f"Lead {lead_id} updated to status: {update.status}"}
+
+
+# ============================================
+# USER AUTHENTICATION (Webapp Users)
+# ============================================
+
+class UserSignupRequest(BaseModel):
+    """User signup request."""
+    email: str = Field(..., description="User email address")
+    password: str = Field(..., min_length=6, description="Password (min 6 characters)")
+    name: str = Field(..., description="User's full name")
+    company: Optional[str] = Field(None, description="Company name")
+
+
+class UserLoginRequest(BaseModel):
+    """User login request."""
+    email: str = Field(..., description="User email address")
+    password: str = Field(..., description="User password")
+
+
+class UserProfileUpdate(BaseModel):
+    """Update user profile."""
+    name: Optional[str] = Field(None, description="Updated name")
+    company: Optional[str] = Field(None, description="Updated company")
+
+
+def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> Dict:
+    """Dependency to get and verify current user from token."""
+    if not credentials:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    user = get_user_from_token(credentials.credentials)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    return user
+
+
+@app.post(
+    "/api/auth/signup",
+    tags=["Auth"],
+    summary="Create a new user account"
+)
+async def user_signup(request: UserSignupRequest):
+    """
+    Create a new user account.
+
+    Returns a JWT token for immediate login.
+
+    **Requirements:**
+    - Email must be unique
+    - Password must be at least 6 characters
+    """
+    try:
+        result = register_user(
+            email=request.email,
+            password=request.password,
+            name=request.name,
+            company=request.company
+        )
+
+        return {
+            "success": True,
+            "message": "Account created successfully",
+            "token": result["token"],
+            "user": result["user"],
+            "expires_in": result["expires_in"]
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post(
+    "/api/auth/login",
+    tags=["Auth"],
+    summary="Login to user account"
+)
+async def user_login(request: UserLoginRequest):
+    """
+    Authenticate user and get access token.
+
+    Returns a JWT token valid for 7 days.
+
+    **Demo credentials:**
+    - Email: demo@geotracker.io
+    - Password: demo123
+    """
+    result = authenticate_user(request.email, request.password)
+    if not result:
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+
+    return {
+        "success": True,
+        "token": result["token"],
+        "user": result["user"],
+        "expires_in": result["expires_in"]
+    }
+
+
+@app.get(
+    "/api/auth/me",
+    tags=["Auth"],
+    summary="Get current user info"
+)
+async def get_user_info(user: Dict = Depends(get_current_user)):
+    """Get information about the currently authenticated user."""
+    return {
+        "success": True,
+        "user": user
+    }
+
+
+@app.patch(
+    "/api/auth/profile",
+    tags=["Auth"],
+    summary="Update user profile"
+)
+async def update_user_profile_endpoint(
+    profile: UserProfileUpdate,
+    user: Dict = Depends(get_current_user)
+):
+    """Update the current user's profile information."""
+    success = update_user(
+        user_id=user["id"],
+        name=profile.name,
+        company=profile.company
+    )
+
+    if not success:
+        raise HTTPException(status_code=400, detail="No changes to update")
+
+    # Get updated user info
+    updated_user = get_user_from_token(user.get("token", "")) or user
+    if profile.name:
+        updated_user["name"] = profile.name
+    if profile.company:
+        updated_user["company"] = profile.company
+
+    return {
+        "success": True,
+        "message": "Profile updated",
+        "user": updated_user
+    }
+
+
+@app.post(
+    "/api/auth/verify",
+    tags=["Auth"],
+    summary="Verify token validity"
+)
+async def verify_user_token_endpoint(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """
+    Verify if the provided token is still valid.
+
+    Returns user info if valid, error if invalid/expired.
+    """
+    if not credentials:
+        raise HTTPException(status_code=401, detail="No token provided")
+
+    payload = verify_user_token(credentials.credentials)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    user = get_user_from_token(credentials.credentials)
+    return {
+        "valid": True,
+        "user": user,
+        "expires_at": payload.get("exp")
+    }
 
 
 # ============================================

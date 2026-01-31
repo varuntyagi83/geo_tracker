@@ -1046,3 +1046,130 @@ def update_admin_last_login(username: str) -> bool:
     updated = cur.rowcount > 0
     con.commit()
     return updated
+
+
+# ---------- App Users (Webapp Authentication) ----------
+
+def _ensure_users_table():
+    """Ensure the users table exists for webapp user authentication."""
+    con = _connect()
+    cur = con.cursor()
+    if not _table_exists(cur, "users"):
+        cur.execute("""
+        CREATE TABLE users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            name TEXT NOT NULL,
+            company TEXT,
+            created_at TEXT NOT NULL,
+            last_login TEXT,
+            email_verified INTEGER DEFAULT 0,
+            is_active INTEGER DEFAULT 1
+        )
+        """)
+        cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email)")
+        con.commit()
+
+
+def create_user(email: str, password_hash: str, name: str, company: Optional[str] = None) -> int:
+    """Create a new webapp user. Returns user ID."""
+    _ensure_users_table()
+    con = _connect()
+    cur = con.cursor()
+    created_at = datetime.now(timezone.utc).isoformat()
+
+    try:
+        cur.execute("""
+            INSERT INTO users (email, password_hash, name, company, created_at)
+            VALUES (?, ?, ?, ?, ?)
+        """, (email.lower(), password_hash, name, company, created_at))
+        user_id = cur.lastrowid
+        con.commit()
+        return user_id
+    except sqlite3.IntegrityError:
+        # Email already exists
+        raise ValueError("Email already registered")
+
+
+def get_user_by_email(email: str) -> Optional[Dict]:
+    """Get user by email address."""
+    _ensure_users_table()
+    con = _connect()
+    cur = con.cursor()
+    cur.execute("""
+        SELECT id, email, password_hash, name, company, created_at, last_login, email_verified, is_active
+        FROM users WHERE email = ?
+    """, (email.lower(),))
+    row = cur.fetchone()
+    if row:
+        columns = [desc[0] for desc in cur.description]
+        return dict(zip(columns, row))
+    return None
+
+
+def get_user_by_id(user_id: int) -> Optional[Dict]:
+    """Get user by ID."""
+    _ensure_users_table()
+    con = _connect()
+    cur = con.cursor()
+    cur.execute("""
+        SELECT id, email, name, company, created_at, last_login, email_verified, is_active
+        FROM users WHERE id = ?
+    """, (user_id,))
+    row = cur.fetchone()
+    if row:
+        columns = [desc[0] for desc in cur.description]
+        return dict(zip(columns, row))
+    return None
+
+
+def update_user_last_login(user_id: int) -> bool:
+    """Update user's last login timestamp."""
+    _ensure_users_table()
+    con = _connect()
+    cur = con.cursor()
+    last_login = datetime.now(timezone.utc).isoformat()
+    cur.execute("""
+        UPDATE users SET last_login = ? WHERE id = ?
+    """, (last_login, user_id))
+    updated = cur.rowcount > 0
+    con.commit()
+    return updated
+
+
+def update_user_profile(user_id: int, name: Optional[str] = None, company: Optional[str] = None) -> bool:
+    """Update user profile information."""
+    _ensure_users_table()
+    con = _connect()
+    cur = con.cursor()
+
+    updates = []
+    params = []
+
+    if name is not None:
+        updates.append("name = ?")
+        params.append(name)
+    if company is not None:
+        updates.append("company = ?")
+        params.append(company)
+
+    if not updates:
+        return False
+
+    params.append(user_id)
+    cur.execute(f"""
+        UPDATE users SET {", ".join(updates)} WHERE id = ?
+    """, params)
+    updated = cur.rowcount > 0
+    con.commit()
+    return updated
+
+
+def get_users_count() -> int:
+    """Get total count of registered users."""
+    _ensure_users_table()
+    con = _connect()
+    cur = con.cursor()
+    cur.execute("SELECT COUNT(*) FROM users")
+    return cur.fetchone()[0]

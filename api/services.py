@@ -263,6 +263,7 @@ class GEOTrackerService:
         model: str,
         mode: str,
         brand_needle: str,
+        job_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Process a single query for a single provider.
@@ -303,6 +304,7 @@ class GEOTrackerService:
                     "raw": bool(config.raw),
                     "brand_name": brand_needle,
                     "company_id": config.company_id,
+                    "job_id": job_id,
                 }
             )
         
@@ -493,6 +495,7 @@ class GEOTrackerService:
                     task["model"],
                     task["mode"],
                     brand_needle,
+                    job.id if job else None,  # Pass job_id for database linking
                 )
                 future_to_task[future] = task
             
@@ -747,6 +750,179 @@ class GEOTrackerService:
             })
 
         return summaries
+
+    def get_results_by_job_id(self, job_id: str) -> Optional[Dict]:
+        """
+        Fetch run results from database by job_id.
+        This allows viewing historical run details after server restart.
+        Returns the same format as the in-memory job results.
+        """
+        con = _connect()
+        cursor = con.cursor()
+
+        # Query to get all runs for this job_id
+        query = """
+            SELECT
+                r.id as run_id,
+                r.run_ts,
+                r.provider,
+                r.model,
+                r.mode,
+                r.prompt_id,
+                r.category,
+                r.question,
+                r.prompt_text,
+                r.market,
+                r.lang,
+                r.extra,
+                resp.response_text,
+                resp.latency_ms,
+                resp.tokens_in,
+                resp.tokens_out,
+                resp.provider_sources,
+                m.presence,
+                m.sentiment,
+                m.trust_authority,
+                m.trust_sunday,
+                m.details
+            FROM runs r
+            LEFT JOIN responses resp ON r.id = resp.run_id
+            LEFT JOIN metrics m ON r.id = m.run_id
+            WHERE json_extract(r.extra, '$.job_id') = ?
+            ORDER BY r.run_ts ASC
+        """
+
+        cursor.execute(query, (job_id,))
+        rows = cursor.fetchall()
+
+        if not rows:
+            return None
+
+        columns = [desc[0] for desc in cursor.description]
+
+        # Build results list
+        results = []
+        brand_name = ""
+        company_id = ""
+        market = ""
+        lang = ""
+        mode = ""
+
+        for row in rows:
+            result = dict(zip(columns, row))
+
+            # Extract metadata from first row
+            if not brand_name and result.get("extra"):
+                try:
+                    extra = json.loads(result["extra"])
+                    brand_name = extra.get("brand_name", "")
+                    company_id = extra.get("company_id", "")
+                except:
+                    pass
+
+            if not market:
+                market = result.get("market", "")
+            if not lang:
+                lang = result.get("lang", "")
+            if not mode:
+                mode = result.get("mode", "")
+
+            # Parse JSON fields
+            sources = []
+            if result.get("provider_sources"):
+                try:
+                    sources = json.loads(result["provider_sources"])
+                except:
+                    pass
+
+            brand_mentioned = False
+            other_brands = []
+            if result.get("details"):
+                try:
+                    details = json.loads(result["details"])
+                    brand_mentioned = details.get("brand_present", False)
+                    other_brands = details.get("other_brands_detected", [])
+                except:
+                    pass
+
+            results.append({
+                "run_id": result["run_id"],
+                "prompt_id": result.get("prompt_id"),
+                "category": result.get("category"),
+                "question": result.get("question", ""),
+                "provider": result.get("provider", ""),
+                "model": result.get("model", ""),
+                "mode": result.get("mode", ""),
+                "response_text": result.get("response_text", ""),
+                "presence": result.get("presence"),
+                "sentiment": result.get("sentiment"),
+                "trust_authority": result.get("trust_authority"),
+                "trust_sunday": result.get("trust_sunday"),
+                "latency_ms": result.get("latency_ms"),
+                "tokens_in": result.get("tokens_in"),
+                "tokens_out": result.get("tokens_out"),
+                "sources": sources,
+                "brand_mentioned": brand_mentioned,
+                "other_brands_detected": other_brands,
+                "brand_name": brand_name,
+                "market": market,
+                "lang": lang,
+            })
+
+        # Calculate summary statistics
+        total_queries = len(results)
+        brand_mentions = sum(1 for r in results if r.get("brand_mentioned") or (r.get("presence") and r["presence"] > 0))
+        visibility = (brand_mentions / total_queries * 100) if total_queries > 0 else 0
+
+        sentiments = [r["sentiment"] for r in results if r.get("sentiment") is not None]
+        avg_sentiment = sum(sentiments) / len(sentiments) if sentiments else None
+
+        trusts = [r["trust_authority"] for r in results if r.get("trust_authority") is not None]
+        avg_trust = sum(trusts) / len(trusts) if trusts else None
+
+        # Aggregate by provider
+        provider_visibility = {}
+        for r in results:
+            provider = r.get("provider", "unknown")
+            if provider not in provider_visibility:
+                provider_visibility[provider] = {"total": 0, "mentions": 0}
+            provider_visibility[provider]["total"] += 1
+            if r.get("brand_mentioned") or (r.get("presence") and r["presence"] > 0):
+                provider_visibility[provider]["mentions"] += 1
+
+        for p, data in provider_visibility.items():
+            provider_visibility[p] = round(data["mentions"] / data["total"] * 100, 2) if data["total"] > 0 else 0
+
+        # Aggregate competitor visibility
+        competitor_counts = {}
+        for r in results:
+            for brand in r.get("other_brands_detected", []):
+                if brand and brand.lower() != brand_name.lower():
+                    competitor_counts[brand] = competitor_counts.get(brand, 0) + 1
+
+        competitor_visibility = {
+            brand: round(count / total_queries * 100, 2)
+            for brand, count in sorted(competitor_counts.items(), key=lambda x: -x[1])[:10]
+        }
+
+        return {
+            "summary": {
+                "run_id": job_id,
+                "company_id": company_id,
+                "brand_name": brand_name,
+                "status": "completed",
+                "total_queries": total_queries,
+                "total_responses": total_queries,
+                "overall_visibility": round(visibility, 2),
+                "avg_sentiment": round(avg_sentiment, 3) if avg_sentiment is not None else None,
+                "avg_trust_authority": round(avg_trust, 3) if avg_trust is not None else None,
+                "provider_visibility": provider_visibility,
+                "competitor_visibility": competitor_visibility,
+                "started_at": results[0]["run_id"] if results else None,
+                "completed_at": results[-1]["run_id"] if results else None,
+            },
+            "results": results
+        }
 
 
 # Global service instance

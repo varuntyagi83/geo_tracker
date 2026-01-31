@@ -227,32 +227,42 @@ async def get_run_status(job_id: str):
 async def get_run_results(job_id: str):
     """
     Get the results of a completed run.
-    
+
     Returns the full results including:
     - Summary metrics (visibility, sentiment, etc.)
     - Individual query results
     - Competitor analysis
+
+    First checks in-memory jobs (for active runs), then falls back
+    to database (for historical runs after server restart).
     """
+    # First try in-memory job manager (for active/recent runs)
     job = job_manager.get_job(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
-    
-    if job.status == JobStatus.PENDING:
-        raise HTTPException(status_code=400, detail="Run has not started yet")
-    
-    if job.status == JobStatus.RUNNING:
-        raise HTTPException(status_code=400, detail="Run is still in progress. Check /status for progress.")
-    
-    if job.status == JobStatus.FAILED:
-        raise HTTPException(status_code=500, detail=f"Run failed: {job.error}")
-    
-    if job.status == JobStatus.CANCELLED:
-        raise HTTPException(status_code=400, detail="Run was cancelled")
-    
-    if not job.result:
-        raise HTTPException(status_code=500, detail="No results available")
-    
-    return job.result
+    if job:
+        if job.status == JobStatus.PENDING:
+            raise HTTPException(status_code=400, detail="Run has not started yet")
+
+        if job.status == JobStatus.RUNNING:
+            raise HTTPException(status_code=400, detail="Run is still in progress. Check /status for progress.")
+
+        if job.status == JobStatus.FAILED:
+            raise HTTPException(status_code=500, detail=f"Run failed: {job.error}")
+
+        if job.status == JobStatus.CANCELLED:
+            raise HTTPException(status_code=400, detail="Run was cancelled")
+
+        if not job.result:
+            raise HTTPException(status_code=500, detail="No results available")
+
+        return job.result
+
+    # Job not in memory - try to load from database (historical runs)
+    db_results = geo_service.get_results_by_job_id(job_id)
+    if db_results:
+        return db_results
+
+    # Not found anywhere
+    raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
 
 
 @app.post(

@@ -675,3 +675,75 @@ def delete_brand(brand_id: int) -> bool:
     deleted = cur.rowcount > 0
     con.commit()
     return deleted
+
+
+def get_all_brand_runs(
+    company_id: Optional[str] = None,
+    limit: int = 50,
+    since_days: int = 30
+) -> List[Dict]:
+    """
+    Get all brand runs with brand info for Previous Runs view.
+    Returns properly grouped runs with job_id for detailed viewing.
+    """
+    _ensure_brands_table()
+    con = _connect()
+    cur = con.cursor()
+
+    query = """
+        SELECT
+            br.id,
+            br.brand_id,
+            br.job_id,
+            br.run_at,
+            br.providers,
+            br.mode,
+            br.total_queries,
+            br.visibility_pct,
+            br.avg_sentiment,
+            br.avg_trust,
+            br.competitor_summary,
+            br.extra,
+            b.brand_name,
+            b.industry,
+            b.market,
+            b.company_id
+        FROM brand_runs br
+        JOIN brands b ON br.brand_id = b.id
+        WHERE br.run_at >= datetime('now', ?)
+    """
+    params = [f'-{since_days} days']
+
+    if company_id:
+        query += " AND b.company_id = ?"
+        params.append(company_id)
+
+    query += " ORDER BY br.run_at DESC LIMIT ?"
+    params.append(limit)
+
+    cur.execute(query, params)
+    rows = cur.fetchall()
+    columns = [desc[0] for desc in cur.description]
+
+    results = []
+    for row in rows:
+        result = dict(zip(columns, row))
+        # Parse JSON fields
+        if result.get("providers"):
+            try:
+                result["providers"] = json.loads(result["providers"])
+            except:
+                result["providers"] = []
+        if result.get("competitor_summary"):
+            try:
+                result["competitor_summary"] = json.loads(result["competitor_summary"])
+            except:
+                result["competitor_summary"] = {}
+        if result.get("extra"):
+            try:
+                result["extra"] = json.loads(result["extra"])
+            except:
+                result["extra"] = {}
+        results.append(result)
+
+    return results

@@ -615,16 +615,23 @@ async def list_brands(
 @app.get(
     "/api/brands/{brand_id}",
     tags=["Brands"],
-    summary="Get brand details"
+    summary="Get brand details with run history"
 )
 async def get_brand(brand_id: int):
     """
-    Get details for a specific brand by ID.
+    Get details for a specific brand by ID, including run history.
     """
     brand = get_brand_by_id(brand_id)
     if not brand:
         raise HTTPException(status_code=404, detail=f"Brand {brand_id} not found")
-    return brand
+
+    # Also fetch the run history for this brand
+    history = get_brand_run_history(brand_id, limit=20)
+
+    return {
+        "brand": brand,
+        "history": history
+    }
 
 
 @app.get(

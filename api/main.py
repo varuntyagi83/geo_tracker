@@ -29,6 +29,7 @@ from .jobs import job_manager, Job, JobStatus
 from .services import geo_service
 from .sheets_service import fetch_sheet_prompts, extract_sheet_id
 from .report_service import generate_visibility_report, get_cached_report
+from .email_service import send_lead_acknowledgment, is_email_service_configured
 
 
 # ============================================
@@ -760,6 +761,75 @@ async def clear_all_runs():
     return {
         "message": "All run data cleared successfully",
         "deleted": result
+    }
+
+
+# ============================================
+# LEAD CAPTURE
+# ============================================
+
+class LeadSubmission(BaseModel):
+    """Lead submission from contact form."""
+    company: str = Field(..., description="Company name")
+    email: str = Field(..., description="Contact email")
+    website: Optional[str] = Field(None, description="Company website")
+    industry: Optional[str] = Field(None, description="Industry/sector")
+    service: str = Field(..., description="Service interested in")
+    contact_name: Optional[str] = Field(None, description="Contact person name")
+
+
+@app.post(
+    "/api/leads",
+    tags=["Leads"],
+    summary="Submit a lead and send acknowledgment email"
+)
+async def submit_lead(lead: LeadSubmission):
+    """
+    Submit a lead from the contact form.
+
+    This endpoint:
+    1. Logs the lead submission
+    2. Sends an acknowledgment email to the lead via Resend
+
+    The primary form submission should still go to Formspree.
+    This endpoint is for sending the auto-reply email.
+    """
+    # Send acknowledgment email
+    email_result = send_lead_acknowledgment(
+        to_email=lead.email,
+        company_name=lead.company,
+        service=lead.service,
+        contact_name=lead.contact_name
+    )
+
+    if email_result["success"]:
+        return {
+            "success": True,
+            "message": "Lead received and acknowledgment email sent",
+            "email_sent": True,
+            "email_id": email_result.get("message_id")
+        }
+    else:
+        # Email failed but we still acknowledge the lead
+        return {
+            "success": True,
+            "message": "Lead received but email could not be sent",
+            "email_sent": False,
+            "email_error": email_result.get("error")
+        }
+
+
+@app.get(
+    "/api/leads/status",
+    tags=["Leads"],
+    summary="Check email service status"
+)
+async def check_email_status():
+    """Check if the email service is properly configured."""
+    configured = is_email_service_configured()
+    return {
+        "email_service_configured": configured,
+        "provider": "resend" if configured else None
     }
 
 

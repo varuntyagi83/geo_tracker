@@ -27,3 +27,6 @@ pydantic>=2.0.0
 # Optional: for production
 gunicorn>=21.0.0
 
+# Email service
+resend>=2.0.0
+

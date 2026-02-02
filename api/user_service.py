@@ -187,3 +187,16 @@ def initialize_demo_user():
             print("[user_service] Created demo user: demo@geotracker.io")
         except ValueError:
             pass  # Already exists
+
+
+def initialize_admin_dashboard_user():
+    """Initialize an admin user for dashboard access if it doesn't exist."""
+    admin_email = "admin@geotracker.io"
+    user = get_user_by_email(admin_email)
+    if not user:
+        try:
+            admin_password = os.getenv("ADMIN_PASSWORD", "geotracker2024!")
+            create_user(admin_email, hash_password(admin_password), "Admin User", "GEO Tracker")
+            print("[user_service] Created admin dashboard user: admin@geotracker.io")
+        except ValueError:
+            pass  # Already exists

@@ -37,7 +37,8 @@ from .admin_service import (
 )
 from .user_service import (
     register_user, authenticate_user, get_user_from_token,
-    verify_user_token, update_user, initialize_demo_user, get_total_users
+    verify_user_token, update_user, initialize_demo_user,
+    initialize_admin_dashboard_user, get_total_users
 )
 from db import insert_lead, get_leads_stats, update_lead_status, get_lead_by_id
 
@@ -935,27 +936,31 @@ async def reset_admin_users(reset_key: str = Query(..., description="Reset key f
         cur.execute("DELETE FROM admin_users WHERE username IN ('admin', 'demo')")
         admin_deleted = cur.rowcount
 
-        # 2. Delete existing WEBAPP demo user (dashboard login)
-        cur.execute("DELETE FROM users WHERE email = 'demo@geotracker.io'")
+        # 2. Delete existing WEBAPP users (dashboard login) - both demo and admin
+        cur.execute("DELETE FROM users WHERE email IN ('demo@geotracker.io', 'admin@geotracker.io')")
         user_deleted = cur.rowcount
 
         conn.commit()
 
-        # 3. Reinitialize admin users with current secret key
+        # 3. Reinitialize admin users with current secret key (for admin panel)
         initialize_default_admin()
 
-        # 4. Reinitialize demo webapp user with current secret key
+        # 4. Reinitialize webapp users with current secret key (for dashboard)
         initialize_demo_user()
+        initialize_admin_dashboard_user()
+
+        admin_password = os.getenv("ADMIN_PASSWORD", "geotracker2024!")
 
         return {
             "success": True,
-            "message": f"Reset complete. Deleted {admin_deleted} admin users and {user_deleted} webapp users.",
+            "message": f"Reset complete. Deleted {admin_deleted} admin panel users and {user_deleted} dashboard users.",
             "credentials": {
                 "admin_panel": {
                     "url": "/admin",
+                    "description": "Lead management admin panel",
                     "admin": {
                         "username": "admin",
-                        "password": os.getenv("ADMIN_PASSWORD", "geotracker2024!")
+                        "password": admin_password
                     },
                     "demo": {
                         "username": "demo",
@@ -964,6 +969,11 @@ async def reset_admin_users(reset_key: str = Query(..., description="Reset key f
                 },
                 "dashboard": {
                     "url": "/login",
+                    "description": "GEO Tracker dashboard",
+                    "admin": {
+                        "email": "admin@geotracker.io",
+                        "password": admin_password
+                    },
                     "demo": {
                         "email": "demo@geotracker.io",
                         "password": "demo123"

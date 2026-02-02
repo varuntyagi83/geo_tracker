@@ -1,21 +1,18 @@
 # api/email_service.py
 """
-Email service for sending emails using Resend HTTP API.
+Email service for sending emails using SendGrid HTTP API.
 
-This service handles:
-1. Auto-reply emails to leads (acknowledgment)
-2. Admin notification emails when new leads come in
-
-Using Resend's HTTP API since Railway blocks all outbound SMTP ports.
+SendGrid free tier: 100 emails/day, no recipient restrictions.
 
 Setup instructions:
-1. Go to https://resend.com and create a free account
-2. Verify your domain in Resend
-3. Get your API key from the dashboard
-4. Set environment variables:
-   - RESEND_API_KEY=re_xxxxxxxxxx (your Resend API key)
-   - ADMIN_NOTIFICATION_EMAILS=your-email@example.com (comma-separated for multiple)
-   - RESEND_FROM_EMAIL=noreply@yourdomain.com (your verified domain)
+1. Go to https://sendgrid.com and create a free account
+2. Go to Settings > Sender Authentication > Verify a Single Sender
+3. Verify your email address (e.g., hi@corevisionailabs.com)
+4. Go to Settings > API Keys > Create API Key (Full Access)
+5. Set environment variables:
+   - SENDGRID_API_KEY=SG.xxxxxxxxxx (your SendGrid API key)
+   - SENDGRID_FROM_EMAIL=hi@corevisionailabs.com (your verified sender email)
+   - ADMIN_NOTIFICATION_EMAILS=hi@corevisionailabs.com (comma-separated)
 """
 import os
 import threading
@@ -26,14 +23,14 @@ from typing import Optional, List
 from datetime import datetime
 
 
-def get_resend_api_key() -> str:
-    """Get Resend API key from environment variables."""
-    return os.getenv("RESEND_API_KEY", "")
+def get_sendgrid_api_key() -> str:
+    """Get SendGrid API key from environment variables."""
+    return os.getenv("SENDGRID_API_KEY", "")
 
 
 def is_email_service_configured() -> bool:
     """Check if email service is properly configured."""
-    return bool(get_resend_api_key())
+    return bool(get_sendgrid_api_key())
 
 
 def get_admin_emails() -> List[str]:
@@ -44,55 +41,55 @@ def get_admin_emails() -> List[str]:
     return [email.strip() for email in emails_str.split(",") if email.strip()]
 
 
-def send_email_resend(
+def send_email_sendgrid(
     to_emails: List[str],
     subject: str,
     html_content: str,
     reply_to: Optional[str] = None
 ) -> dict:
     """
-    Send an email using Resend HTTP API.
-
-    Args:
-        to_emails: List of recipient email addresses
-        subject: Email subject line
-        html_content: HTML content of the email
-        reply_to: Optional reply-to address
-
-    Returns:
-        dict with success status and message/error
+    Send an email using SendGrid HTTP API.
     """
-    api_key = get_resend_api_key()
+    api_key = get_sendgrid_api_key()
 
     if not api_key:
         return {
             "success": False,
-            "error": "Resend API key not configured. Set RESEND_API_KEY env var."
+            "error": "SendGrid API key not configured. Set SENDGRID_API_KEY env var."
         }
 
     try:
-        # Get from email from env - MUST be from verified domain
-        from_email = os.getenv("RESEND_FROM_EMAIL", "noreply@corevisionailabs.com")
+        from_email = os.getenv("SENDGRID_FROM_EMAIL", "hi@corevisionailabs.com")
 
-        # Prepare request data - Resend expects specific format
+        # SendGrid API format
         data = {
-            "from": from_email,
-            "to": to_emails,
+            "personalizations": [
+                {
+                    "to": [{"email": email} for email in to_emails]
+                }
+            ],
+            "from": {
+                "email": from_email,
+                "name": "GEO Tracker"
+            },
             "subject": subject,
-            "html": html_content
+            "content": [
+                {
+                    "type": "text/html",
+                    "value": html_content
+                }
+            ]
         }
 
         if reply_to:
-            data["reply_to"] = reply_to
+            data["reply_to"] = {"email": reply_to}
 
         json_data = json.dumps(data).encode("utf-8")
 
-        # Log the request for debugging
-        print(f"[email] Sending to Resend API: from={from_email}, to={to_emails}, subject={subject[:50]}...")
+        print(f"[email] Sending via SendGrid: from={from_email}, to={to_emails}, subject={subject[:50]}...")
 
-        # Make HTTP request to Resend API
         req = urllib.request.Request(
-            "https://api.resend.com/emails",
+            "https://api.sendgrid.com/v3/mail/send",
             data=json_data,
             headers={
                 "Authorization": f"Bearer {api_key}",
@@ -102,12 +99,11 @@ def send_email_resend(
         )
 
         with urllib.request.urlopen(req, timeout=30) as response:
-            response_body = response.read().decode("utf-8")
-            result = json.loads(response_body)
-            print(f"[email] Resend API success: {result}")
+            # SendGrid returns 202 Accepted with empty body on success
+            print(f"[email] SendGrid success: status {response.status}")
             return {
                 "success": True,
-                "message_id": result.get("id"),
+                "message_id": f"sendgrid-{datetime.utcnow().timestamp()}",
                 "sent_at": datetime.utcnow().isoformat()
             }
 
@@ -117,10 +113,10 @@ def send_email_resend(
             error_body = e.read().decode("utf-8")
         except:
             error_body = str(e)
-        print(f"[email] Resend API error ({e.code}): {error_body}")
+        print(f"[email] SendGrid error ({e.code}): {error_body}")
         return {
             "success": False,
-            "error": f"Resend API error ({e.code}): {error_body}"
+            "error": f"SendGrid error ({e.code}): {error_body}"
         }
     except Exception as e:
         print(f"[email] Exception: {str(e)}")
@@ -144,47 +140,45 @@ def get_onboarding_email_html(
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Welcome to GEO Tracker</title>
 </head>
-<body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background-color: #f4f4f5;">
-    <table role="presentation" style="width: 100%; border-collapse: collapse;">
+<body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #f4f4f5;">
+    <table style="width: 100%; border-collapse: collapse;">
         <tr>
             <td style="padding: 40px 20px;">
-                <table role="presentation" style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);">
+                <table style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);">
                     <tr>
-                        <td style="background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%); padding: 40px 40px 30px;">
-                            <h1 style="margin: 0; color: #ffffff; font-size: 28px; font-weight: 700;">GEO Tracker</h1>
+                        <td style="background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%); padding: 40px;">
+                            <h1 style="margin: 0; color: #ffffff; font-size: 28px;">GEO Tracker</h1>
                             <p style="margin: 8px 0 0; color: rgba(255, 255, 255, 0.9); font-size: 14px;">AI Visibility Intelligence Platform</p>
                         </td>
                     </tr>
                     <tr>
                         <td style="padding: 40px;">
-                            <h2 style="margin: 0 0 20px; color: #18181b; font-size: 24px; font-weight: 600;">Thank You for Your Interest!</h2>
+                            <h2 style="margin: 0 0 20px; color: #18181b; font-size: 24px;">Thank You for Your Interest!</h2>
                             <p style="margin: 0 0 16px; color: #3f3f46; font-size: 16px; line-height: 1.6;">{greeting}</p>
                             <p style="margin: 0 0 16px; color: #3f3f46; font-size: 16px; line-height: 1.6;">
                                 We've received your inquiry about <strong style="color: #4f46e5;">{service}</strong>.
-                                Our team is excited to help you understand and optimize your brand's visibility
-                                across AI platforms like ChatGPT, Claude, Gemini, and Perplexity.
+                                Our team will help you understand and optimize your brand's visibility across AI platforms.
                             </p>
                             <p style="margin: 0 0 24px; color: #3f3f46; font-size: 16px; line-height: 1.6;">
-                                A member of our team will be in touch within <strong>24 hours</strong> to discuss your specific needs.
+                                A member of our team will be in touch within <strong>24 hours</strong>.
                             </p>
                             <div style="background-color: #f4f4f5; border-radius: 8px; padding: 24px; margin-bottom: 24px;">
-                                <h3 style="margin: 0 0 16px; color: #18181b; font-size: 18px; font-weight: 600;">What Happens Next?</h3>
+                                <h3 style="margin: 0 0 16px; color: #18181b; font-size: 18px;">What Happens Next?</h3>
                                 <ol style="margin: 0; padding-left: 20px; color: #3f3f46; font-size: 15px; line-height: 1.8;">
-                                    <li style="margin-bottom: 8px;">We'll review your company profile and industry</li>
-                                    <li style="margin-bottom: 8px;">Our team will prepare a personalized consultation</li>
-                                    <li style="margin-bottom: 8px;">We'll reach out to schedule a call at your convenience</li>
-                                    <li>You'll receive insights about your AI visibility landscape</li>
+                                    <li>We'll review your company profile</li>
+                                    <li>Our team will prepare a consultation</li>
+                                    <li>We'll reach out to schedule a call</li>
+                                    <li>You'll receive AI visibility insights</li>
                                 </ol>
                             </div>
-                            <p style="margin: 24px 0 0; color: #3f3f46; font-size: 16px; line-height: 1.6;">
+                            <p style="margin: 0; color: #3f3f46; font-size: 16px;">
                                 Best regards,<br><strong>The GEO Tracker Team</strong>
                             </p>
                         </td>
                     </tr>
                     <tr>
-                        <td style="background-color: #f4f4f5; padding: 24px 40px; text-align: center;">
+                        <td style="background-color: #f4f4f5; padding: 24px; text-align: center;">
                             <p style="margin: 0; color: #71717a; font-size: 14px;">GEO Tracker - AI Visibility Intelligence</p>
                         </td>
                     </tr>
@@ -206,14 +200,22 @@ def get_admin_notification_html(
     contact_name: Optional[str] = None
 ) -> str:
     """Generate the admin notification email HTML template."""
-    website_row = f'<tr><td style="padding: 12px 16px; border-bottom: 1px solid #e5e7eb; color: #6b7280; font-size: 14px;">Website</td><td style="padding: 12px 16px; border-bottom: 1px solid #e5e7eb; color: #111827; font-size: 14px;"><a href="{website}" style="color: #4f46e5;">{website}</a></td></tr>' if website else ""
-    industry_row = f'<tr><td style="padding: 12px 16px; border-bottom: 1px solid #e5e7eb; color: #6b7280; font-size: 14px;">Industry</td><td style="padding: 12px 16px; border-bottom: 1px solid #e5e7eb; color: #111827; font-size: 14px;">{industry}</td></tr>' if industry else ""
-    contact_row = f'<tr><td style="padding: 12px 16px; border-bottom: 1px solid #e5e7eb; color: #6b7280; font-size: 14px;">Contact</td><td style="padding: 12px 16px; border-bottom: 1px solid #e5e7eb; color: #111827; font-size: 14px;">{contact_name}</td></tr>' if contact_name else ""
+    rows = f"""
+        <tr><td style="padding: 12px; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Company</td><td style="padding: 12px; border-bottom: 1px solid #e5e7eb; color: #111827; font-weight: 600;">{company_name}</td></tr>
+        <tr><td style="padding: 12px; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Email</td><td style="padding: 12px; border-bottom: 1px solid #e5e7eb;"><a href="mailto:{email}" style="color: #4f46e5;">{email}</a></td></tr>
+    """
+    if contact_name:
+        rows += f'<tr><td style="padding: 12px; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Contact</td><td style="padding: 12px; border-bottom: 1px solid #e5e7eb; color: #111827;">{contact_name}</td></tr>'
+    if website:
+        rows += f'<tr><td style="padding: 12px; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Website</td><td style="padding: 12px; border-bottom: 1px solid #e5e7eb;"><a href="{website}" style="color: #4f46e5;">{website}</a></td></tr>'
+    if industry:
+        rows += f'<tr><td style="padding: 12px; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Industry</td><td style="padding: 12px; border-bottom: 1px solid #e5e7eb; color: #111827;">{industry}</td></tr>'
+    rows += f'<tr><td style="padding: 12px; color: #6b7280;">Service</td><td style="padding: 12px; color: #111827; font-weight: 600;">{service}</td></tr>'
 
     return f"""
 <!DOCTYPE html>
 <html>
-<head><meta charset="UTF-8"><title>New Lead: {company_name}</title></head>
+<head><meta charset="UTF-8"></head>
 <body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #f3f4f6;">
     <table style="width: 100%; border-collapse: collapse;">
         <tr>
@@ -221,19 +223,14 @@ def get_admin_notification_html(
                 <table style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; overflow: hidden;">
                     <tr>
                         <td style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); padding: 24px 40px;">
-                            <h1 style="margin: 0; color: #ffffff; font-size: 20px; font-weight: 600;">New Lead Received</h1>
+                            <h1 style="margin: 0; color: #ffffff; font-size: 20px;">New Lead Received</h1>
                         </td>
                     </tr>
                     <tr>
                         <td style="padding: 32px 40px;">
                             <p style="margin: 0 0 24px; color: #374151; font-size: 16px;">A new lead has submitted the contact form:</p>
-                            <table style="width: 100%; border-collapse: collapse; background-color: #f9fafb; border-radius: 8px; margin-bottom: 24px;">
-                                <tr><td style="padding: 12px 16px; border-bottom: 1px solid #e5e7eb; color: #6b7280; font-size: 14px;">Company</td><td style="padding: 12px 16px; border-bottom: 1px solid #e5e7eb; color: #111827; font-size: 14px; font-weight: 600;">{company_name}</td></tr>
-                                <tr><td style="padding: 12px 16px; border-bottom: 1px solid #e5e7eb; color: #6b7280; font-size: 14px;">Email</td><td style="padding: 12px 16px; border-bottom: 1px solid #e5e7eb; color: #111827; font-size: 14px;"><a href="mailto:{email}" style="color: #4f46e5;">{email}</a></td></tr>
-                                {contact_row}
-                                {website_row}
-                                {industry_row}
-                                <tr><td style="padding: 12px 16px; color: #6b7280; font-size: 14px;">Service</td><td style="padding: 12px 16px; color: #111827; font-size: 14px; font-weight: 600;">{service}</td></tr>
+                            <table style="width: 100%; border-collapse: collapse; background-color: #f9fafb; border-radius: 8px;">
+                                {rows}
                             </table>
                         </td>
                     </tr>
@@ -259,7 +256,7 @@ def send_lead_acknowledgment(
         contact_name=contact_name
     )
 
-    return send_email_resend(
+    return send_email_sendgrid(
         to_emails=[to_email],
         subject="Welcome to GEO Tracker - We've Received Your Request!",
         html_content=html_content
@@ -291,7 +288,7 @@ def send_admin_notification(
         contact_name=contact_name
     )
 
-    result = send_email_resend(
+    result = send_email_sendgrid(
         to_emails=admin_emails,
         subject=f"[New Lead] {company_name} - {service}",
         html_content=html_content,
@@ -354,15 +351,13 @@ def send_lead_emails(
     Send both lead acknowledgment AND admin notification emails.
     Emails are sent in a background thread to avoid blocking the API.
     """
-    # Check if email service is configured
     if not is_email_service_configured():
         return {
-            "lead_email": {"success": False, "error": "Resend API key not configured"},
-            "admin_email": {"success": False, "error": "Resend API key not configured"},
+            "lead_email": {"success": False, "error": "SendGrid API key not configured"},
+            "admin_email": {"success": False, "error": "SendGrid API key not configured"},
             "success": False
         }
 
-    # Start background thread to send emails
     thread = threading.Thread(
         target=_send_emails_background,
         args=(company_name, email, service, website, industry, contact_name),
@@ -370,7 +365,6 @@ def send_lead_emails(
     )
     thread.start()
 
-    # Return immediately - emails will be sent in background
     return {
         "lead_email": {"success": True, "message": "Email queued for sending"},
         "admin_email": {"success": True, "message": "Email queued for sending"},

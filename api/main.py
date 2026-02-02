@@ -907,6 +907,56 @@ class AdminLoginRequest(BaseModel):
     password: str = Field(..., description="Admin password")
 
 
+@app.post(
+    "/api/admin/reset-users",
+    tags=["Admin"],
+    summary="Reset admin users (one-time fix)"
+)
+async def reset_admin_users(reset_key: str = Query(..., description="Reset key for security")):
+    """
+    Reset admin users by deleting and recreating them.
+
+    This is a one-time fix for when admin users were created with a different
+    ADMIN_SECRET_KEY than currently configured.
+
+    Call with: POST /api/admin/reset-users?reset_key=reset-admin-2024
+    """
+    # Simple security check - require a specific key
+    expected_key = os.getenv("ADMIN_RESET_KEY", "reset-admin-2024")
+    if reset_key != expected_key:
+        raise HTTPException(status_code=403, detail="Invalid reset key")
+
+    try:
+        from db import get_connection
+        conn = get_connection()
+        cur = conn.cursor()
+
+        # Delete existing admin users
+        cur.execute("DELETE FROM admin_users WHERE username IN ('admin', 'demo')")
+        deleted_count = cur.rowcount
+        conn.commit()
+
+        # Reinitialize admin users with current secret key
+        initialize_default_admin()
+
+        return {
+            "success": True,
+            "message": f"Reset complete. Deleted {deleted_count} users and recreated admin/demo users.",
+            "credentials": {
+                "admin": {
+                    "username": "admin",
+                    "password": os.getenv("ADMIN_PASSWORD", "geotracker2024!")
+                },
+                "demo": {
+                    "username": "demo",
+                    "password": "demo123"
+                }
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Reset failed: {str(e)}")
+
+
 class AdminLeadUpdate(BaseModel):
     """Update lead status."""
     status: str = Field(..., description="New status (new, contacted, qualified, converted, lost)")

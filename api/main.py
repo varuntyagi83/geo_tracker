@@ -30,7 +30,7 @@ from .jobs import job_manager, Job, JobStatus
 from .services import geo_service
 from .sheets_service import fetch_sheet_prompts, extract_sheet_id
 from .report_service import generate_visibility_report, get_cached_report
-from .email_service import send_lead_acknowledgment, is_email_service_configured
+from .email_service import send_lead_acknowledgment, send_lead_emails, is_email_service_configured
 from .admin_service import (
     authenticate_admin, verify_token, initialize_default_admin,
     get_leads_for_role, can_update_lead, get_user_permissions
@@ -798,7 +798,7 @@ class LeadSubmission(BaseModel):
 @app.post(
     "/api/leads",
     tags=["Leads"],
-    summary="Submit a lead and send acknowledgment email"
+    summary="Submit a lead and send emails"
 )
 async def submit_lead(lead: LeadSubmission):
     """
@@ -807,17 +807,23 @@ async def submit_lead(lead: LeadSubmission):
     This endpoint:
     1. Saves the lead to the database
     2. Sends an acknowledgment email to the lead via Resend
+    3. Sends a notification email to admin(s) via Resend
 
-    The primary form submission should still go to Formspree.
-    This endpoint is for sending the auto-reply email and tracking.
+    This is now the PRIMARY lead capture endpoint (Formspree removed).
     """
-    # Send acknowledgment email
-    email_result = send_lead_acknowledgment(
-        to_email=lead.email,
+    # Send both lead acknowledgment AND admin notification emails
+    email_result = send_lead_emails(
         company_name=lead.company,
+        email=lead.email,
         service=lead.service,
+        website=lead.website,
+        industry=lead.industry,
         contact_name=lead.contact_name
     )
+
+    # Extract results for database
+    lead_email_success = email_result.get("lead_email", {}).get("success", False)
+    lead_email_id = email_result.get("lead_email", {}).get("message_id")
 
     # Save lead to database
     try:
@@ -828,30 +834,52 @@ async def submit_lead(lead: LeadSubmission):
             website=lead.website,
             industry=lead.industry,
             contact_name=lead.contact_name,
-            email_sent=email_result["success"],
-            email_id=email_result.get("message_id")
+            email_sent=lead_email_success,
+            email_id=lead_email_id
         )
     except Exception as e:
         # Log error but don't fail the request
         print(f"[leads] Failed to save lead to database: {e}")
         lead_id = None
 
-    if email_result["success"]:
+    # Build response
+    admin_email_result = email_result.get("admin_email", {})
+
+    if lead_email_success:
         return {
             "success": True,
-            "message": "Lead received and acknowledgment email sent",
-            "email_sent": True,
-            "email_id": email_result.get("message_id"),
-            "lead_id": lead_id
+            "message": "Lead received and emails sent",
+            "lead_id": lead_id,
+            "emails": {
+                "lead_acknowledgment": {
+                    "sent": True,
+                    "message_id": lead_email_id
+                },
+                "admin_notification": {
+                    "sent": admin_email_result.get("success", False),
+                    "message_id": admin_email_result.get("message_id"),
+                    "sent_to": admin_email_result.get("sent_to", []),
+                    "error": admin_email_result.get("error") if not admin_email_result.get("success") else None
+                }
+            }
         }
     else:
-        # Email failed but we still acknowledge the lead
+        # Lead email failed - still save but report the issue
         return {
-            "success": True,
-            "message": "Lead received but email could not be sent",
-            "email_sent": False,
-            "email_error": email_result.get("error"),
-            "lead_id": lead_id
+            "success": True,  # Lead was still captured
+            "message": "Lead received but acknowledgment email could not be sent",
+            "lead_id": lead_id,
+            "emails": {
+                "lead_acknowledgment": {
+                    "sent": False,
+                    "error": email_result.get("lead_email", {}).get("error")
+                },
+                "admin_notification": {
+                    "sent": admin_email_result.get("success", False),
+                    "message_id": admin_email_result.get("message_id"),
+                    "error": admin_email_result.get("error") if not admin_email_result.get("success") else None
+                }
+            }
         }
 
 

@@ -910,14 +910,14 @@ class AdminLoginRequest(BaseModel):
 @app.post(
     "/api/admin/reset-users",
     tags=["Admin"],
-    summary="Reset admin users (one-time fix)"
+    summary="Reset ALL users (admin + webapp users) - one-time fix"
 )
 async def reset_admin_users(reset_key: str = Query(..., description="Reset key for security")):
     """
-    Reset admin users by deleting and recreating them.
+    Reset BOTH admin users AND webapp users by deleting and recreating them.
 
-    This is a one-time fix for when admin users were created with a different
-    ADMIN_SECRET_KEY than currently configured.
+    This is a one-time fix for when users were created with a different
+    SECRET_KEY than currently configured.
 
     Call with: POST /api/admin/reset-users?reset_key=reset-admin-2024
     """
@@ -931,25 +931,43 @@ async def reset_admin_users(reset_key: str = Query(..., description="Reset key f
         conn = _connect()
         cur = conn.cursor()
 
-        # Delete existing admin users
+        # 1. Delete existing ADMIN users (admin panel)
         cur.execute("DELETE FROM admin_users WHERE username IN ('admin', 'demo')")
-        deleted_count = cur.rowcount
+        admin_deleted = cur.rowcount
+
+        # 2. Delete existing WEBAPP demo user (dashboard login)
+        cur.execute("DELETE FROM users WHERE email = 'demo@geotracker.io'")
+        user_deleted = cur.rowcount
+
         conn.commit()
 
-        # Reinitialize admin users with current secret key
+        # 3. Reinitialize admin users with current secret key
         initialize_default_admin()
+
+        # 4. Reinitialize demo webapp user with current secret key
+        initialize_demo_user()
 
         return {
             "success": True,
-            "message": f"Reset complete. Deleted {deleted_count} users and recreated admin/demo users.",
+            "message": f"Reset complete. Deleted {admin_deleted} admin users and {user_deleted} webapp users.",
             "credentials": {
-                "admin": {
-                    "username": "admin",
-                    "password": os.getenv("ADMIN_PASSWORD", "geotracker2024!")
+                "admin_panel": {
+                    "url": "/admin",
+                    "admin": {
+                        "username": "admin",
+                        "password": os.getenv("ADMIN_PASSWORD", "geotracker2024!")
+                    },
+                    "demo": {
+                        "username": "demo",
+                        "password": "demo123"
+                    }
                 },
-                "demo": {
-                    "username": "demo",
-                    "password": "demo123"
+                "dashboard": {
+                    "url": "/login",
+                    "demo": {
+                        "email": "demo@geotracker.io",
+                        "password": "demo123"
+                    }
                 }
             }
         }

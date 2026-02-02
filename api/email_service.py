@@ -73,8 +73,10 @@ def send_email_resend(
 
     try:
         # Prepare request data
+        # Use verified domain for sending emails
+        from_email = os.getenv("RESEND_FROM_EMAIL", "GEO Tracker <hi@corevisionailabs.com>")
         data = {
-            "from": "GEO Tracker <onboarding@resend.dev>",
+            "from": from_email,
             "to": to_emails,
             "subject": subject,
             "html": html_content

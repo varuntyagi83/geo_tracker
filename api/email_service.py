@@ -21,6 +21,7 @@ Setup instructions:
 """
 import os
 import smtplib
+import threading
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from typing import Optional, List
@@ -30,6 +31,7 @@ from datetime import datetime
 # Gmail SMTP configuration
 GMAIL_SMTP_SERVER = "smtp.gmail.com"
 GMAIL_SMTP_PORT = 587
+SMTP_TIMEOUT = 30  # 30 second timeout for SMTP operations
 
 
 def get_gmail_credentials() -> tuple:
@@ -93,8 +95,8 @@ def send_email_smtp(
         html_part = MIMEText(html_content, "html")
         msg.attach(html_part)
 
-        # Send via SMTP
-        with smtplib.SMTP(GMAIL_SMTP_SERVER, GMAIL_SMTP_PORT) as server:
+        # Send via SMTP with timeout
+        with smtplib.SMTP(GMAIL_SMTP_SERVER, GMAIL_SMTP_PORT, timeout=SMTP_TIMEOUT) as server:
             server.starttls()
             server.login(user, password)
             server.sendmail(user, to_emails, msg.as_string())
@@ -444,6 +446,40 @@ def send_admin_notification(
     return result
 
 
+def _send_emails_background(
+    company_name: str,
+    email: str,
+    service: str,
+    website: Optional[str],
+    industry: Optional[str],
+    contact_name: Optional[str]
+):
+    """Background thread function to send emails without blocking the API."""
+    try:
+        # Send acknowledgment to lead
+        lead_result = send_lead_acknowledgment(
+            to_email=email,
+            company_name=company_name,
+            service=service,
+            contact_name=contact_name
+        )
+        print(f"[email] Lead acknowledgment to {email}: {'sent' if lead_result.get('success') else lead_result.get('error')}")
+
+        # Send notification to admin(s)
+        admin_result = send_admin_notification(
+            company_name=company_name,
+            email=email,
+            service=service,
+            website=website,
+            industry=industry,
+            contact_name=contact_name
+        )
+        print(f"[email] Admin notification: {'sent' if admin_result.get('success') else admin_result.get('error')}")
+
+    except Exception as e:
+        print(f"[email] Background email error: {e}")
+
+
 def send_lead_emails(
     company_name: str,
     email: str,
@@ -455,8 +491,9 @@ def send_lead_emails(
     """
     Send both lead acknowledgment AND admin notification emails.
 
-    This is the main function to call when a new lead comes in.
-    It handles both emails and returns combined results.
+    This function now sends emails in a background thread to avoid
+    blocking the API response. The lead is saved immediately and
+    emails are sent asynchronously.
 
     Args:
         company_name: Lead's company name
@@ -467,36 +504,28 @@ def send_lead_emails(
         contact_name: Optional contact person name
 
     Returns:
-        dict with results for both emails
+        dict indicating emails are being sent in background
     """
-    results = {
-        "lead_email": None,
-        "admin_email": None,
-        "success": False
+    # Check if email service is configured
+    if not is_email_service_configured():
+        return {
+            "lead_email": {"success": False, "error": "Gmail credentials not configured"},
+            "admin_email": {"success": False, "error": "Gmail credentials not configured"},
+            "success": False
+        }
+
+    # Start background thread to send emails
+    thread = threading.Thread(
+        target=_send_emails_background,
+        args=(company_name, email, service, website, industry, contact_name),
+        daemon=True
+    )
+    thread.start()
+
+    # Return immediately - emails will be sent in background
+    return {
+        "lead_email": {"success": True, "message": "Email queued for sending"},
+        "admin_email": {"success": True, "message": "Email queued for sending"},
+        "success": True,
+        "async": True
     }
-
-    # 1. Send acknowledgment to lead
-    lead_result = send_lead_acknowledgment(
-        to_email=email,
-        company_name=company_name,
-        service=service,
-        contact_name=contact_name
-    )
-    results["lead_email"] = lead_result
-
-    # 2. Send notification to admin(s)
-    admin_result = send_admin_notification(
-        company_name=company_name,
-        email=email,
-        service=service,
-        website=website,
-        industry=industry,
-        contact_name=contact_name
-    )
-    results["admin_email"] = admin_result
-
-    # Consider success if at least the lead email was sent
-    # (admin notification is nice-to-have)
-    results["success"] = lead_result.get("success", False)
-
-    return results

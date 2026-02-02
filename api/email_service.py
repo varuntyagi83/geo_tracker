@@ -1,33 +1,120 @@
 # api/email_service.py
 """
-Email service for sending emails using Resend.
+Email service for sending emails using Gmail SMTP.
 
 This service handles:
 1. Auto-reply emails to leads (acknowledgment)
 2. Admin notification emails when new leads come in
 
-Resend free tier: 100 emails/day, 3,000 emails/month
-https://resend.com
+Gmail SMTP is free and doesn't require domain verification.
+You just need to create an App Password in your Google account.
+
+Setup instructions:
+1. Go to Google Account > Security > 2-Step Verification (enable if not already)
+2. Go to Google Account > Security > App passwords
+3. Create a new app password for "Mail" on "Other (Custom name)" - call it "GEO Tracker"
+4. Copy the 16-character password
+5. Set environment variables:
+   - GMAIL_USER=your-email@gmail.com
+   - GMAIL_APP_PASSWORD=xxxx-xxxx-xxxx-xxxx (the 16-char app password)
+   - ADMIN_NOTIFICATION_EMAILS=your-email@gmail.com (comma-separated for multiple)
 """
 import os
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from typing import Optional, List
 from datetime import datetime
 
-# Check if resend is available
-try:
-    import resend
-    RESEND_AVAILABLE = True
-except ImportError:
-    RESEND_AVAILABLE = False
+
+# Gmail SMTP configuration
+GMAIL_SMTP_SERVER = "smtp.gmail.com"
+GMAIL_SMTP_PORT = 587
 
 
-def init_resend():
-    """Initialize Resend with API key."""
-    api_key = os.getenv("RESEND_API_KEY")
-    if not api_key:
-        return False
-    resend.api_key = api_key
-    return True
+def get_gmail_credentials() -> tuple:
+    """Get Gmail credentials from environment variables."""
+    user = os.getenv("GMAIL_USER", "")
+    password = os.getenv("GMAIL_APP_PASSWORD", "")
+    return user, password
+
+
+def is_email_service_configured() -> bool:
+    """Check if email service is properly configured."""
+    user, password = get_gmail_credentials()
+    return bool(user and password)
+
+
+def get_admin_emails() -> List[str]:
+    """Get list of admin emails to notify for new leads."""
+    emails_str = os.getenv("ADMIN_NOTIFICATION_EMAILS", "")
+    if not emails_str:
+        return []
+    return [email.strip() for email in emails_str.split(",") if email.strip()]
+
+
+def send_email_smtp(
+    to_emails: List[str],
+    subject: str,
+    html_content: str,
+    reply_to: Optional[str] = None
+) -> dict:
+    """
+    Send an email using Gmail SMTP.
+
+    Args:
+        to_emails: List of recipient email addresses
+        subject: Email subject line
+        html_content: HTML content of the email
+        reply_to: Optional reply-to address
+
+    Returns:
+        dict with success status and message/error
+    """
+    user, password = get_gmail_credentials()
+
+    if not user or not password:
+        return {
+            "success": False,
+            "error": "Gmail credentials not configured. Set GMAIL_USER and GMAIL_APP_PASSWORD env vars."
+        }
+
+    try:
+        # Create message
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = f"GEO Tracker <{user}>"
+        msg["To"] = ", ".join(to_emails)
+
+        if reply_to:
+            msg["Reply-To"] = reply_to
+
+        # Attach HTML content
+        html_part = MIMEText(html_content, "html")
+        msg.attach(html_part)
+
+        # Send via SMTP
+        with smtplib.SMTP(GMAIL_SMTP_SERVER, GMAIL_SMTP_PORT) as server:
+            server.starttls()
+            server.login(user, password)
+            server.sendmail(user, to_emails, msg.as_string())
+
+        return {
+            "success": True,
+            "message_id": f"gmail-{datetime.utcnow().timestamp()}",
+            "sent_at": datetime.utcnow().isoformat()
+        }
+
+    except smtplib.SMTPAuthenticationError as e:
+        return {
+            "success": False,
+            "error": f"Gmail authentication failed. Check GMAIL_USER and GMAIL_APP_PASSWORD. Error: {str(e)}"
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
 
 
 def get_onboarding_email_html(
@@ -115,21 +202,6 @@ def get_onboarding_email_html(
                                 </p>
                             </div>
 
-                            <!-- CTA Button -->
-                            <table role="presentation" style="width: 100%;">
-                                <tr>
-                                    <td style="text-align: center; padding: 10px 0 30px;">
-                                        <a href="https://geotracker.io"
-                                           style="display: inline-block; background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
-                                                  color: #ffffff; text-decoration: none; padding: 14px 32px;
-                                                  border-radius: 8px; font-size: 16px; font-weight: 600;
-                                                  box-shadow: 0 4px 14px rgba(79, 70, 229, 0.4);">
-                                            Learn More About GEO Optimization
-                                        </a>
-                                    </td>
-                                </tr>
-                            </table>
-
                             <p style="margin: 0; color: #3f3f46; font-size: 16px; line-height: 1.6;">
                                 In the meantime, feel free to reply to this email if you have any questions.
                             </p>
@@ -159,87 +231,6 @@ def get_onboarding_email_html(
 </body>
 </html>
 """
-
-
-def send_lead_acknowledgment(
-    to_email: str,
-    company_name: str,
-    service: str,
-    contact_name: Optional[str] = None,
-    from_email: str = "GEO Tracker <hello@geotracker.io>"
-) -> dict:
-    """
-    Send an acknowledgment email to a lead.
-
-    Args:
-        to_email: Lead's email address
-        company_name: Lead's company name
-        service: Service they're interested in
-        contact_name: Optional contact name
-        from_email: From email address (must be verified domain in Resend)
-
-    Returns:
-        dict with success status and message/error
-    """
-    if not RESEND_AVAILABLE:
-        return {
-            "success": False,
-            "error": "Resend library not installed. Run: pip install resend"
-        }
-
-    if not init_resend():
-        return {
-            "success": False,
-            "error": "RESEND_API_KEY not configured"
-        }
-
-    try:
-        html_content = get_onboarding_email_html(
-            company_name=company_name,
-            service=service,
-            contact_name=contact_name
-        )
-
-        params = {
-            "from": from_email,
-            "to": [to_email],
-            "subject": f"Welcome to GEO Tracker - We've Received Your Request!",
-            "html": html_content,
-            "reply_to": "support@geotracker.io"
-        }
-
-        response = resend.Emails.send(params)
-
-        return {
-            "success": True,
-            "message_id": response.get("id"),
-            "sent_at": datetime.utcnow().isoformat()
-        }
-
-    except Exception as e:
-        return {
-            "success": False,
-            "error": str(e)
-        }
-
-
-def is_email_service_configured() -> bool:
-    """Check if email service is properly configured."""
-    return RESEND_AVAILABLE and bool(os.getenv("RESEND_API_KEY"))
-
-
-# ============================================
-# ADMIN NOTIFICATION EMAILS
-# ============================================
-
-# Admin email recipients - comma-separated list in env var
-# Example: ADMIN_NOTIFICATION_EMAILS=you@company.com,team@company.com
-def get_admin_emails() -> List[str]:
-    """Get list of admin emails to notify for new leads."""
-    emails_str = os.getenv("ADMIN_NOTIFICATION_EMAILS", "")
-    if not emails_str:
-        return []
-    return [email.strip() for email in emails_str.split(",") if email.strip()]
 
 
 def get_admin_notification_html(
@@ -369,14 +360,46 @@ def get_admin_notification_html(
 """
 
 
+def send_lead_acknowledgment(
+    to_email: str,
+    company_name: str,
+    service: str,
+    contact_name: Optional[str] = None
+) -> dict:
+    """
+    Send an acknowledgment email to a lead.
+
+    Args:
+        to_email: Lead's email address
+        company_name: Lead's company name
+        service: Service they're interested in
+        contact_name: Optional contact name
+
+    Returns:
+        dict with success status and message/error
+    """
+    html_content = get_onboarding_email_html(
+        company_name=company_name,
+        service=service,
+        contact_name=contact_name
+    )
+
+    result = send_email_smtp(
+        to_emails=[to_email],
+        subject="Welcome to GEO Tracker - We've Received Your Request!",
+        html_content=html_content
+    )
+
+    return result
+
+
 def send_admin_notification(
     company_name: str,
     email: str,
     service: str,
     website: Optional[str] = None,
     industry: Optional[str] = None,
-    contact_name: Optional[str] = None,
-    from_email: str = "GEO Tracker Leads <leads@geotracker.io>"
+    contact_name: Optional[str] = None
 ) -> dict:
     """
     Send a notification email to admin(s) when a new lead comes in.
@@ -388,23 +411,10 @@ def send_admin_notification(
         website: Optional company website
         industry: Optional industry/sector
         contact_name: Optional contact person name
-        from_email: From email address (must be verified domain in Resend)
 
     Returns:
         dict with success status and message/error
     """
-    if not RESEND_AVAILABLE:
-        return {
-            "success": False,
-            "error": "Resend library not installed"
-        }
-
-    if not init_resend():
-        return {
-            "success": False,
-            "error": "RESEND_API_KEY not configured"
-        }
-
     admin_emails = get_admin_emails()
     if not admin_emails:
         return {
@@ -412,38 +422,26 @@ def send_admin_notification(
             "error": "No admin notification emails configured. Set ADMIN_NOTIFICATION_EMAILS env var."
         }
 
-    try:
-        html_content = get_admin_notification_html(
-            company_name=company_name,
-            email=email,
-            service=service,
-            website=website,
-            industry=industry,
-            contact_name=contact_name
-        )
+    html_content = get_admin_notification_html(
+        company_name=company_name,
+        email=email,
+        service=service,
+        website=website,
+        industry=industry,
+        contact_name=contact_name
+    )
 
-        params = {
-            "from": from_email,
-            "to": admin_emails,
-            "subject": f"[New Lead] {company_name} - {service}",
-            "html": html_content,
-            "reply_to": email  # Reply goes directly to the lead
-        }
+    result = send_email_smtp(
+        to_emails=admin_emails,
+        subject=f"[New Lead] {company_name} - {service}",
+        html_content=html_content,
+        reply_to=email  # Reply goes directly to the lead
+    )
 
-        response = resend.Emails.send(params)
+    if result.get("success"):
+        result["sent_to"] = admin_emails
 
-        return {
-            "success": True,
-            "message_id": response.get("id"),
-            "sent_to": admin_emails,
-            "sent_at": datetime.utcnow().isoformat()
-        }
-
-    except Exception as e:
-        return {
-            "success": False,
-            "error": str(e)
-        }
+    return result
 
 
 def send_lead_emails(

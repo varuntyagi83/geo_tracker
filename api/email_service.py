@@ -29,8 +29,10 @@ from datetime import datetime
 
 
 # Gmail SMTP configuration
+# Using SSL port 465 instead of TLS port 587 because some cloud platforms
+# (like Railway) block outbound connections on port 587
 GMAIL_SMTP_SERVER = "smtp.gmail.com"
-GMAIL_SMTP_PORT = 587
+GMAIL_SMTP_PORT = 465  # SSL port (more reliable on cloud platforms)
 SMTP_TIMEOUT = 30  # 30 second timeout for SMTP operations
 
 
@@ -95,9 +97,8 @@ def send_email_smtp(
         html_part = MIMEText(html_content, "html")
         msg.attach(html_part)
 
-        # Send via SMTP with timeout
-        with smtplib.SMTP(GMAIL_SMTP_SERVER, GMAIL_SMTP_PORT, timeout=SMTP_TIMEOUT) as server:
-            server.starttls()
+        # Send via SMTP_SSL (port 465) - more reliable on cloud platforms
+        with smtplib.SMTP_SSL(GMAIL_SMTP_SERVER, GMAIL_SMTP_PORT, timeout=SMTP_TIMEOUT) as server:
             server.login(user, password)
             server.sendmail(user, to_emails, msg.as_string())
 

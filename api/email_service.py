@@ -1,52 +1,40 @@
 # api/email_service.py
 """
-Email service for sending emails using Gmail SMTP.
+Email service for sending emails using Resend API.
 
 This service handles:
 1. Auto-reply emails to leads (acknowledgment)
 2. Admin notification emails when new leads come in
 
-Gmail SMTP is free and doesn't require domain verification.
-You just need to create an App Password in your Google account.
+Resend is an HTTP-based email API that works on cloud platforms
+where SMTP ports are blocked (like Railway).
 
 Setup instructions:
-1. Go to Google Account > Security > 2-Step Verification (enable if not already)
-2. Go to Google Account > Security > App passwords
-3. Create a new app password for "Mail" on "Other (Custom name)" - call it "GEO Tracker"
-4. Copy the 16-character password
-5. Set environment variables:
-   - GMAIL_USER=your-email@gmail.com
-   - GMAIL_APP_PASSWORD=xxxx-xxxx-xxxx-xxxx (the 16-char app password)
+1. Go to https://resend.com and create a free account
+2. Get your API key from the dashboard
+3. Set environment variables:
+   - RESEND_API_KEY=re_xxxxxxxxxx (your Resend API key)
    - ADMIN_NOTIFICATION_EMAILS=your-email@gmail.com (comma-separated for multiple)
+
+Note: Free tier uses onboarding@resend.dev as sender (no domain verification needed).
 """
 import os
-import smtplib
 import threading
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+import urllib.request
+import urllib.error
+import json
 from typing import Optional, List
 from datetime import datetime
 
 
-# Gmail SMTP configuration
-# Using SSL port 465 instead of TLS port 587 because some cloud platforms
-# (like Railway) block outbound connections on port 587
-GMAIL_SMTP_SERVER = "smtp.gmail.com"
-GMAIL_SMTP_PORT = 465  # SSL port (more reliable on cloud platforms)
-SMTP_TIMEOUT = 30  # 30 second timeout for SMTP operations
-
-
-def get_gmail_credentials() -> tuple:
-    """Get Gmail credentials from environment variables."""
-    user = os.getenv("GMAIL_USER", "")
-    password = os.getenv("GMAIL_APP_PASSWORD", "")
-    return user, password
+def get_resend_api_key() -> str:
+    """Get Resend API key from environment variables."""
+    return os.getenv("RESEND_API_KEY", "")
 
 
 def is_email_service_configured() -> bool:
     """Check if email service is properly configured."""
-    user, password = get_gmail_credentials()
-    return bool(user and password)
+    return bool(get_resend_api_key())
 
 
 def get_admin_emails() -> List[str]:
@@ -57,14 +45,14 @@ def get_admin_emails() -> List[str]:
     return [email.strip() for email in emails_str.split(",") if email.strip()]
 
 
-def send_email_smtp(
+def send_email_resend(
     to_emails: List[str],
     subject: str,
     html_content: str,
     reply_to: Optional[str] = None
 ) -> dict:
     """
-    Send an email using Gmail SMTP.
+    Send an email using Resend HTTP API.
 
     Args:
         to_emails: List of recipient email addresses
@@ -75,43 +63,50 @@ def send_email_smtp(
     Returns:
         dict with success status and message/error
     """
-    user, password = get_gmail_credentials()
+    api_key = get_resend_api_key()
 
-    if not user or not password:
+    if not api_key:
         return {
             "success": False,
-            "error": "Gmail credentials not configured. Set GMAIL_USER and GMAIL_APP_PASSWORD env vars."
+            "error": "Resend API key not configured. Set RESEND_API_KEY env var."
         }
 
     try:
-        # Create message
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = subject
-        msg["From"] = f"GEO Tracker <{user}>"
-        msg["To"] = ", ".join(to_emails)
-
-        if reply_to:
-            msg["Reply-To"] = reply_to
-
-        # Attach HTML content
-        html_part = MIMEText(html_content, "html")
-        msg.attach(html_part)
-
-        # Send via SMTP_SSL (port 465) - more reliable on cloud platforms
-        with smtplib.SMTP_SSL(GMAIL_SMTP_SERVER, GMAIL_SMTP_PORT, timeout=SMTP_TIMEOUT) as server:
-            server.login(user, password)
-            server.sendmail(user, to_emails, msg.as_string())
-
-        return {
-            "success": True,
-            "message_id": f"gmail-{datetime.utcnow().timestamp()}",
-            "sent_at": datetime.utcnow().isoformat()
+        # Prepare request data
+        data = {
+            "from": "GEO Tracker <onboarding@resend.dev>",
+            "to": to_emails,
+            "subject": subject,
+            "html": html_content
         }
 
-    except smtplib.SMTPAuthenticationError as e:
+        if reply_to:
+            data["reply_to"] = reply_to
+
+        # Make HTTP request to Resend API
+        req = urllib.request.Request(
+            "https://api.resend.com/emails",
+            data=json.dumps(data).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            },
+            method="POST"
+        )
+
+        with urllib.request.urlopen(req, timeout=30) as response:
+            result = json.loads(response.read().decode("utf-8"))
+            return {
+                "success": True,
+                "message_id": result.get("id"),
+                "sent_at": datetime.utcnow().isoformat()
+            }
+
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8") if e.fp else str(e)
         return {
             "success": False,
-            "error": f"Gmail authentication failed. Check GMAIL_USER and GMAIL_APP_PASSWORD. Error: {str(e)}"
+            "error": f"Resend API error ({e.code}): {error_body}"
         }
     except Exception as e:
         return {
@@ -387,7 +382,7 @@ def send_lead_acknowledgment(
         contact_name=contact_name
     )
 
-    result = send_email_smtp(
+    result = send_email_resend(
         to_emails=[to_email],
         subject="Welcome to GEO Tracker - We've Received Your Request!",
         html_content=html_content
@@ -434,7 +429,7 @@ def send_admin_notification(
         contact_name=contact_name
     )
 
-    result = send_email_smtp(
+    result = send_email_resend(
         to_emails=admin_emails,
         subject=f"[New Lead] {company_name} - {service}",
         html_content=html_content,
@@ -510,8 +505,8 @@ def send_lead_emails(
     # Check if email service is configured
     if not is_email_service_configured():
         return {
-            "lead_email": {"success": False, "error": "Gmail credentials not configured"},
-            "admin_email": {"success": False, "error": "Gmail credentials not configured"},
+            "lead_email": {"success": False, "error": "Resend API key not configured"},
+            "admin_email": {"success": False, "error": "Resend API key not configured"},
             "success": False
         }
 

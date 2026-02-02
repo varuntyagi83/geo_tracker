@@ -1,30 +1,35 @@
 # api/email_service.py
 """
-Email service for sending emails using Resend API.
+Email service for sending emails using Resend SMTP.
 
 This service handles:
 1. Auto-reply emails to leads (acknowledgment)
 2. Admin notification emails when new leads come in
 
-Resend is an HTTP-based email API that works on cloud platforms
-where SMTP ports are blocked (like Railway).
+Using Resend's SMTP server (smtp.resend.com) which may work better
+on Railway than their HTTP API for verified domains.
 
 Setup instructions:
 1. Go to https://resend.com and create a free account
-2. Get your API key from the dashboard
-3. Set environment variables:
-   - RESEND_API_KEY=re_xxxxxxxxxx (your Resend API key)
-   - ADMIN_NOTIFICATION_EMAILS=your-email@gmail.com (comma-separated for multiple)
-
-Note: Free tier uses onboarding@resend.dev as sender (no domain verification needed).
+2. Verify your domain in Resend
+3. Get your API key from the dashboard
+4. Set environment variables:
+   - RESEND_API_KEY=re_xxxxxxxxxx (your Resend API key, used as SMTP password)
+   - ADMIN_NOTIFICATION_EMAILS=your-email@example.com (comma-separated for multiple)
+   - RESEND_FROM_EMAIL=noreply@yourdomain.com (your verified domain)
 """
 import os
+import smtplib
 import threading
-import urllib.request
-import urllib.error
-import json
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from typing import Optional, List
 from datetime import datetime
+
+# Resend SMTP configuration
+RESEND_SMTP_SERVER = "smtp.resend.com"
+RESEND_SMTP_PORT = 465  # SSL port
+SMTP_TIMEOUT = 30
 
 
 def get_resend_api_key() -> str:
@@ -72,44 +77,37 @@ def send_email_resend(
         }
 
     try:
-        # Prepare request data
-        # Use verified domain for sending emails
-        # Note: Using send.corevisionailabs.com subdomain as per DNS setup
-        from_email = os.getenv("RESEND_FROM_EMAIL", "GEO Tracker <noreply@send.corevisionailabs.com>")
-        data = {
-            "from": from_email,
-            "to": to_emails,
-            "subject": subject,
-            "html": html_content
-        }
+        # Get from email from env or use default
+        from_email = os.getenv("RESEND_FROM_EMAIL", "noreply@corevisionailabs.com")
+
+        # Create message
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = f"GEO Tracker <{from_email}>"
+        msg["To"] = ", ".join(to_emails)
 
         if reply_to:
-            data["reply_to"] = reply_to
+            msg["Reply-To"] = reply_to
 
-        # Make HTTP request to Resend API
-        req = urllib.request.Request(
-            "https://api.resend.com/emails",
-            data=json.dumps(data).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json"
-            },
-            method="POST"
-        )
+        # Attach HTML content
+        html_part = MIMEText(html_content, "html")
+        msg.attach(html_part)
 
-        with urllib.request.urlopen(req, timeout=30) as response:
-            result = json.loads(response.read().decode("utf-8"))
-            return {
-                "success": True,
-                "message_id": result.get("id"),
-                "sent_at": datetime.utcnow().isoformat()
-            }
+        # Send via Resend SMTP (user: "resend", password: API key)
+        with smtplib.SMTP_SSL(RESEND_SMTP_SERVER, RESEND_SMTP_PORT, timeout=SMTP_TIMEOUT) as server:
+            server.login("resend", api_key)
+            server.sendmail(from_email, to_emails, msg.as_string())
 
-    except urllib.error.HTTPError as e:
-        error_body = e.read().decode("utf-8") if e.fp else str(e)
+        return {
+            "success": True,
+            "message_id": f"resend-smtp-{datetime.utcnow().timestamp()}",
+            "sent_at": datetime.utcnow().isoformat()
+        }
+
+    except smtplib.SMTPAuthenticationError as e:
         return {
             "success": False,
-            "error": f"Resend API error ({e.code}): {error_body}"
+            "error": f"Resend SMTP auth failed: {str(e)}"
         }
     except Exception as e:
         return {

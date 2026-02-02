@@ -38,7 +38,7 @@ from .admin_service import (
 from .user_service import (
     register_user, authenticate_user, get_user_from_token,
     verify_user_token, update_user, initialize_demo_user,
-    initialize_admin_dashboard_user, get_total_users
+    initialize_admin_dashboard_user, get_total_users, get_user_permissions as get_user_perms
 )
 from db import insert_lead, get_leads_stats, update_lead_status, get_lead_by_id
 
@@ -911,14 +911,14 @@ class AdminLoginRequest(BaseModel):
 @app.post(
     "/api/admin/reset-users",
     tags=["Admin"],
-    summary="Reset ALL users (admin + webapp users) - one-time fix"
+    summary="Reset ALL users - one-time fix for unified auth"
 )
 async def reset_admin_users(reset_key: str = Query(..., description="Reset key for security")):
     """
-    Reset BOTH admin users AND webapp users by deleting and recreating them.
+    Reset users by deleting and recreating them with proper roles.
 
-    This is a one-time fix for when users were created with a different
-    SECRET_KEY than currently configured.
+    This is a one-time fix for migrating to the unified authentication system.
+    All users now use the same 'users' table with role-based permissions.
 
     Call with: POST /api/admin/reset-users?reset_key=reset-admin-2024
     """
@@ -932,53 +932,51 @@ async def reset_admin_users(reset_key: str = Query(..., description="Reset key f
         conn = _connect()
         cur = conn.cursor()
 
-        # 1. Delete existing ADMIN users (admin panel)
-        cur.execute("DELETE FROM admin_users WHERE username IN ('admin', 'demo')")
-        admin_deleted = cur.rowcount
+        # 1. Delete old admin_users table entries (legacy - no longer used for auth)
+        try:
+            cur.execute("DELETE FROM admin_users WHERE username IN ('admin', 'demo')")
+            admin_deleted = cur.rowcount
+        except Exception:
+            admin_deleted = 0
 
-        # 2. Delete existing WEBAPP users (dashboard login) - both demo and admin
+        # 2. Delete existing users (unified auth system)
         cur.execute("DELETE FROM users WHERE email IN ('demo@geotracker.io', 'admin@geotracker.io')")
         user_deleted = cur.rowcount
 
         conn.commit()
 
-        # 3. Reinitialize admin users with current secret key (for admin panel)
-        initialize_default_admin()
+        # 3. Reinitialize users with proper roles (unified auth)
+        initialize_demo_user()  # Creates demo@geotracker.io with role='demo'
+        initialize_admin_dashboard_user()  # Creates admin@geotracker.io with role='admin'
 
-        # 4. Reinitialize webapp users with current secret key (for dashboard)
-        initialize_demo_user()
-        initialize_admin_dashboard_user()
+        # 4. Also reinitialize old admin panel users for backwards compatibility
+        initialize_default_admin()
 
         admin_password = os.getenv("ADMIN_PASSWORD", "geotracker2024!")
 
         return {
             "success": True,
-            "message": f"Reset complete. Deleted {admin_deleted} admin panel users and {user_deleted} dashboard users.",
-            "credentials": {
-                "admin_panel": {
-                    "url": "/admin",
-                    "description": "Lead management admin panel",
-                    "admin": {
-                        "username": "admin",
-                        "password": admin_password
-                    },
-                    "demo": {
-                        "username": "demo",
-                        "password": "demo123"
-                    }
+            "message": f"Reset complete. Unified auth system configured.",
+            "unified_login": {
+                "url": "/login",
+                "description": "Single login for all users - role determines access",
+                "admin": {
+                    "email": "admin@geotracker.io",
+                    "password": admin_password,
+                    "role": "admin",
+                    "access": "Full access to dashboard + admin panel + leads"
                 },
-                "dashboard": {
-                    "url": "/login",
-                    "description": "GEO Tracker dashboard",
-                    "admin": {
-                        "email": "admin@geotracker.io",
-                        "password": admin_password
-                    },
-                    "demo": {
-                        "email": "demo@geotracker.io",
-                        "password": "demo123"
-                    }
+                "demo": {
+                    "email": "demo@geotracker.io",
+                    "password": "demo123",
+                    "role": "demo",
+                    "access": "Dashboard + admin panel (read-only, masked emails)"
                 }
+            },
+            "legacy_admin_panel": {
+                "note": "Legacy /admin panel still works with username/password",
+                "admin": {"username": "admin", "password": admin_password},
+                "demo": {"username": "demo", "password": "demo123"}
             }
         }
     except Exception as e:
@@ -1202,14 +1200,19 @@ async def user_signup(request: UserSignupRequest):
             email=request.email,
             password=request.password,
             name=request.name,
-            company=request.company
+            company=request.company,
+            role="user"  # New signups are always regular users
         )
+
+        # Get permissions for the new user
+        permissions = get_user_perms("user")
 
         return {
             "success": True,
             "message": "Account created successfully",
             "token": result["token"],
             "user": result["user"],
+            "permissions": permissions,
             "expires_in": result["expires_in"]
         }
     except ValueError as e:
@@ -1227,18 +1230,30 @@ async def user_login(request: UserLoginRequest):
 
     Returns a JWT token valid for 7 days.
 
+    This is the UNIFIED login endpoint for all users (admin, demo, regular users).
+    The user's role determines their permissions.
+
     **Demo credentials:**
     - Email: demo@geotracker.io
     - Password: demo123
+
+    **Admin credentials:**
+    - Email: admin@geotracker.io
+    - Password: (set via ADMIN_PASSWORD env var, default: geotracker2024!)
     """
     result = authenticate_user(request.email, request.password)
     if not result:
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
+    # Get permissions based on role
+    role = result["user"].get("role", "user")
+    permissions = get_user_perms(role)
+
     return {
         "success": True,
         "token": result["token"],
         "user": result["user"],
+        "permissions": permissions,
         "expires_in": result["expires_in"]
     }
 
@@ -1250,9 +1265,12 @@ async def user_login(request: UserLoginRequest):
 )
 async def get_user_info(user: Dict = Depends(get_current_user)):
     """Get information about the currently authenticated user."""
+    role = user.get("role", "user")
+    permissions = get_user_perms(role)
     return {
         "success": True,
-        "user": user
+        "user": user,
+        "permissions": permissions
     }
 
 
@@ -1308,9 +1326,13 @@ async def verify_user_token_endpoint(credentials: HTTPAuthorizationCredentials =
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
     user = get_user_from_token(credentials.credentials)
+    role = user.get("role", "user") if user else "user"
+    permissions = get_user_perms(role)
+
     return {
         "valid": True,
         "user": user,
+        "permissions": permissions,
         "expires_at": payload.get("exp")
     }
 

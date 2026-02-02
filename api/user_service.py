@@ -79,10 +79,11 @@ def verify_user_token(token: str) -> Optional[Dict]:
         return None
 
 
-def register_user(email: str, password: str, name: str, company: Optional[str] = None) -> Optional[Dict]:
+def register_user(email: str, password: str, name: str, company: Optional[str] = None, role: str = "user") -> Optional[Dict]:
     """
     Register a new user.
     Returns token and user info if successful, None if email already exists.
+    Role can be 'admin', 'user', or 'demo'.
     """
     # Check password requirements
     if len(password) < 6:
@@ -92,8 +93,8 @@ def register_user(email: str, password: str, name: str, company: Optional[str] =
     password_hash = hash_password(password)
 
     try:
-        # Create user
-        user_id = create_user(email, password_hash, name, company)
+        # Create user with role
+        user_id = create_user(email, password_hash, name, company, role)
 
         # Generate token
         token = generate_user_token(user_id, email)
@@ -105,6 +106,7 @@ def register_user(email: str, password: str, name: str, company: Optional[str] =
                 "email": email,
                 "name": name,
                 "company": company,
+                "role": role,
             },
             "expires_in": TOKEN_EXPIRY_DAYS * 24 * 3600,  # seconds
         }
@@ -141,6 +143,7 @@ def authenticate_user(email: str, password: str) -> Optional[Dict]:
             "email": user["email"],
             "name": user["name"],
             "company": user["company"],
+            "role": user.get("role", "user"),
         },
         "expires_in": TOKEN_EXPIRY_DAYS * 24 * 3600,  # seconds
     }
@@ -161,9 +164,47 @@ def get_user_from_token(token: str) -> Optional[Dict]:
         "email": user["email"],
         "name": user["name"],
         "company": user["company"],
+        "role": user.get("role", "user"),
         "created_at": user["created_at"],
         "last_login": user["last_login"],
     }
+
+
+def get_user_permissions(role: str) -> Dict:
+    """Get permissions based on user role."""
+    if role == "admin":
+        return {
+            "can_view_leads": True,
+            "can_view_emails": True,
+            "can_update_leads": True,
+            "can_delete_leads": True,
+            "can_view_stats": True,
+            "can_manage_users": True,
+            "can_access_dashboard": True,
+            "can_access_admin": True,
+        }
+    elif role == "demo":
+        return {
+            "can_view_leads": True,
+            "can_view_emails": False,  # Masked emails
+            "can_update_leads": False,
+            "can_delete_leads": False,
+            "can_view_stats": True,
+            "can_manage_users": False,
+            "can_access_dashboard": True,
+            "can_access_admin": True,  # Read-only access
+        }
+    else:  # 'user' role
+        return {
+            "can_view_leads": False,
+            "can_view_emails": False,
+            "can_update_leads": False,
+            "can_delete_leads": False,
+            "can_view_stats": False,
+            "can_manage_users": False,
+            "can_access_dashboard": True,
+            "can_access_admin": False,
+        }
 
 
 def update_user(user_id: int, name: Optional[str] = None, company: Optional[str] = None) -> bool:
@@ -183,8 +224,8 @@ def initialize_demo_user():
     user = get_user_by_email(demo_email)
     if not user:
         try:
-            create_user(demo_email, hash_password("demo123"), "Demo User", "Demo Company")
-            print("[user_service] Created demo user: demo@geotracker.io")
+            create_user(demo_email, hash_password("demo123"), "Demo User", "Demo Company", role="demo")
+            print("[user_service] Created demo user: demo@geotracker.io (role: demo)")
         except ValueError:
             pass  # Already exists
 
@@ -196,7 +237,7 @@ def initialize_admin_dashboard_user():
     if not user:
         try:
             admin_password = os.getenv("ADMIN_PASSWORD", "geotracker2024!")
-            create_user(admin_email, hash_password(admin_password), "Admin User", "GEO Tracker")
-            print("[user_service] Created admin dashboard user: admin@geotracker.io")
+            create_user(admin_email, hash_password(admin_password), "Admin User", "GEO Tracker", role="admin")
+            print("[user_service] Created admin user: admin@geotracker.io (role: admin)")
         except ValueError:
             pass  # Already exists

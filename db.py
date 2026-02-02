@@ -1062,6 +1062,7 @@ def _ensure_users_table():
             password_hash TEXT NOT NULL,
             name TEXT NOT NULL,
             company TEXT,
+            role TEXT DEFAULT 'user',
             created_at TEXT NOT NULL,
             last_login TEXT,
             email_verified INTEGER DEFAULT 0,
@@ -1070,10 +1071,16 @@ def _ensure_users_table():
         """)
         cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email)")
         con.commit()
+    else:
+        # Migration: add role column if it doesn't exist
+        cols = _colnames(cur, "users")
+        if "role" not in cols:
+            cur.execute("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'")
+            con.commit()
 
 
-def create_user(email: str, password_hash: str, name: str, company: Optional[str] = None) -> int:
-    """Create a new webapp user. Returns user ID."""
+def create_user(email: str, password_hash: str, name: str, company: Optional[str] = None, role: str = "user") -> int:
+    """Create a new webapp user. Returns user ID. Role can be 'admin', 'user', or 'demo'."""
     _ensure_users_table()
     con = _connect()
     cur = con.cursor()
@@ -1081,9 +1088,9 @@ def create_user(email: str, password_hash: str, name: str, company: Optional[str
 
     try:
         cur.execute("""
-            INSERT INTO users (email, password_hash, name, company, created_at)
-            VALUES (?, ?, ?, ?, ?)
-        """, (email.lower(), password_hash, name, company, created_at))
+            INSERT INTO users (email, password_hash, name, company, role, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (email.lower(), password_hash, name, company, role, created_at))
         user_id = cur.lastrowid
         con.commit()
         return user_id
@@ -1098,7 +1105,7 @@ def get_user_by_email(email: str) -> Optional[Dict]:
     con = _connect()
     cur = con.cursor()
     cur.execute("""
-        SELECT id, email, password_hash, name, company, created_at, last_login, email_verified, is_active
+        SELECT id, email, password_hash, name, company, role, created_at, last_login, email_verified, is_active
         FROM users WHERE email = ?
     """, (email.lower(),))
     row = cur.fetchone()
@@ -1114,7 +1121,7 @@ def get_user_by_id(user_id: int) -> Optional[Dict]:
     con = _connect()
     cur = con.cursor()
     cur.execute("""
-        SELECT id, email, name, company, created_at, last_login, email_verified, is_active
+        SELECT id, email, name, company, role, created_at, last_login, email_verified, is_active
         FROM users WHERE id = ?
     """, (user_id,))
     row = cur.fetchone()

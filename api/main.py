@@ -927,8 +927,8 @@ async def reset_admin_users(reset_key: str = Query(..., description="Reset key f
         raise HTTPException(status_code=403, detail="Invalid reset key")
 
     try:
-        from db import get_connection
-        conn = get_connection()
+        from db import _connect
+        conn = _connect()
         cur = conn.cursor()
 
         # Delete existing admin users
